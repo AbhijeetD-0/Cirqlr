@@ -1,0 +1,6 @@
+{
+  "name": "Sangha - Social Outing & Activity Companionship Marketplace",
+  "description": "Verified platonic social activity companionship marketplace in West Bengal and Odisha for public outings, movies, cafes, shopping, and events.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

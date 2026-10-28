@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/* Hardware-accelerated smooth scrolling without GPU buffer bloat on pinch zoom */
+html, body {
+  -webkit-overflow-scrolling: touch;
+  background-color: #020617;
+}
+
