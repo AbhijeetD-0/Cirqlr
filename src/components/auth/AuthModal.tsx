@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMarketplace } from '../../context/MarketplaceContext';
 import { AllowedDocumentType, UserCity, UserProfile } from '../../types/marketplace';
-import { sendUnifiedOtp, generateSixDigitOtp, verifyOtp } from '../../services/otpService';
+import { sendUnifiedOtp, sendOtpViaEmailJs, generateSixDigitOtp, verifyOtp } from '../../services/otpService';
 import { saveUserToSheet } from '../../services/googleSheetsService';
 import { CopyUserIdButton } from '../common/CopyUserIdButton';
 import { SignUpLegalReaderModal, LegalDocType } from './SignUpLegalReaderModal';
@@ -29,7 +29,8 @@ import {
   FileText,
   KeyRound,
   Sparkles,
-  Home
+  Home,
+  Send
 } from 'lucide-react';
 
 interface AuthModalProps {
@@ -65,11 +66,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [legalDocToView, setLegalDocToView] = useState<LegalDocType | null>(null);
 
   // --- RETURNING USER LOGIN STATE ---
+  const [loginMethod, setLoginMethod] = useState<'password' | 'otp'>('password');
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Instant Gmail OTP Login State
+  const [loginOtpSent, setLoginOtpSent] = useState(false);
+  const [loginExpectedOtp, setLoginExpectedOtp] = useState('');
+  const [loginEnteredOtp, setLoginEnteredOtp] = useState('');
+  const [loginOtpTimer, setLoginOtpTimer] = useState(60);
+  const [isSendingLoginOtp, setIsSendingLoginOtp] = useState(false);
+  const [loginUserFound, setLoginUserFound] = useState<UserProfile | null>(null);
 
   // --- 3-STEP PASSWORD RESET FLOW ---
   const [isResetMode, setIsResetMode] = useState(false);
@@ -156,6 +166,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     };
   }, [isResetMode, resetStep, resetResendTimer]);
 
+  // Countdown timer for returning user login OTP
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    if (loginOtpSent && loginOtpTimer > 0) {
+      interval = setInterval(() => {
+        setLoginOtpTimer((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [loginOtpSent, loginOtpTimer]);
+
   // Strictly reset login form inputs whenever modal closes or user logs out
   useEffect(() => {
     if (!isOpen || !currentUser) {
@@ -169,6 +192,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       setResetNewPassword('');
       setResetConfirmPassword('');
       setResetEnteredOtp('');
+      setLoginOtpSent(false);
+      setLoginEnteredOtp('');
+      setLoginUserFound(null);
     }
   }, [isOpen, currentUser]);
 
@@ -266,6 +292,93 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
+  // --- RETURNING USER GMAIL OTP LOGIN HANDLERS ---
+  const handleSendLoginOtp = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setLoginError('');
+
+    const cleanId = loginIdentifier.trim().toLowerCase();
+    if (!cleanId) {
+      setLoginError('Please enter your User ID or registered Gmail address.');
+      return;
+    }
+
+    const found = usersAndCompanions.find(
+      (u) =>
+        u.userToken.toLowerCase() === cleanId ||
+        (u.email && u.email.trim().toLowerCase() === cleanId)
+    );
+
+    if (!found) {
+      setLoginError('No registered account found with this User ID or Gmail address.');
+      return;
+    }
+
+    if (!found.email) {
+      setLoginError('This account does not have a registered Gmail address. Please log in with password.');
+      return;
+    }
+
+    const cleanPhone = (found.phoneNumber || '').replace(/\D/g, '').slice(-10);
+    const generatedOtp = generateSixDigitOtp();
+    setLoginUserFound(found);
+    setLoginExpectedOtp(generatedOtp);
+    setLoginEnteredOtp('');
+    setLoginOtpTimer(60);
+    setIsSendingLoginOtp(true);
+
+    try {
+      const result = await sendOtpViaEmailJs(found.email, generatedOtp, cleanPhone);
+      if (!result.success) {
+        console.warn('EmailJS login OTP notice:', result.error);
+      }
+      setLoginOtpSent(true);
+    } catch {
+      setLoginOtpSent(true);
+    } finally {
+      setIsSendingLoginOtp(false);
+    }
+  };
+
+  const handleResendLoginOtp = async () => {
+    if (loginOtpTimer > 0 || !loginUserFound || !loginUserFound.email) return;
+    const cleanPhone = (loginUserFound.phoneNumber || '').replace(/\D/g, '').slice(-10);
+    const generatedOtp = generateSixDigitOtp();
+    setLoginExpectedOtp(generatedOtp);
+    setLoginOtpTimer(60);
+    setIsSendingLoginOtp(true);
+    try {
+      await sendOtpViaEmailJs(loginUserFound.email, generatedOtp, cleanPhone);
+    } finally {
+      setIsSendingLoginOtp(false);
+    }
+  };
+
+  const handleVerifyLoginOtp = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setLoginError('');
+
+    if (loginEnteredOtp.trim().length !== 6) {
+      setLoginError('Please enter the complete 6-digit OTP code.');
+      return;
+    }
+
+    const isValid = verifyOtp(loginEnteredOtp, loginExpectedOtp);
+    if (!isValid) {
+      setLoginError('Incorrect OTP passcode. Please check your Gmail or resend code.');
+      return;
+    }
+
+    if (loginUserFound) {
+      loginUserAccount(loginUserFound);
+      setLoginIdentifier('');
+      setLoginPassword('');
+      setLoginError('');
+      setLoginOtpSent(false);
+      onClose();
+    }
+  };
+
   // --- 3-STEP PASSWORD RESET HANDLERS ---
   const handleStartResetFlow = () => {
     setIsResetMode(true);
@@ -316,7 +429,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsResetSubmitting(true);
 
     try {
-      await sendUnifiedOtp(cleanPhone, found.email, generatedOtp);
+      await sendOtpViaEmailJs(found.email, generatedOtp, cleanPhone);
       setResetStep('otp');
     } catch {
       setResetStep('otp');
@@ -327,14 +440,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
   // Resend OTP for Password Reset
   const handleResendResetOtp = async () => {
-    if (resetResendTimer > 0 || !resetUserFound) return;
+    if (resetResendTimer > 0 || !resetUserFound || !resetUserFound.email) return;
     const cleanPhone = (resetUserFound.phoneNumber || '').replace(/\D/g, '').slice(-10);
     const generatedOtp = generateSixDigitOtp();
     setResetExpectedOtp(generatedOtp);
     setResetResendTimer(60);
     setIsResetSubmitting(true);
     try {
-      await sendUnifiedOtp(cleanPhone, resetUserFound.email, generatedOtp);
+      await sendOtpViaEmailJs(resetUserFound.email, generatedOtp, cleanPhone);
     } finally {
       setIsResetSubmitting(false);
     }
@@ -512,7 +625,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       return;
     }
 
-    // Trigger Gmail OTP
+    // Trigger Gmail OTP via EmailJS
     const cleanDigits = phoneNumber.replace(/\D/g, '').slice(-10);
     const cleanEmail = email.trim().toLowerCase();
     const generatedOtp = generateSixDigitOtp();
@@ -523,7 +636,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsSendingOtp(true);
 
     try {
-      await sendUnifiedOtp(cleanDigits, cleanEmail, generatedOtp);
+      const res = await sendOtpViaEmailJs(cleanEmail, generatedOtp, cleanDigits);
+      if (!res.success) {
+        console.warn('EmailJS sign up OTP notice:', res.error);
+      }
       setSignUpStep(5);
     } catch {
       setSignUpStep(5);
@@ -541,7 +657,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setResendTimer(60);
     setIsSendingOtp(true);
     try {
-      await sendUnifiedOtp(cleanDigits, cleanEmail, generatedOtp);
+      await sendOtpViaEmailJs(cleanEmail, generatedOtp, cleanDigits);
     } finally {
       setIsSendingOtp(false);
     }
@@ -689,92 +805,248 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                   </div>
                 )}
 
-                <form onSubmit={handlePasswordLoginSubmit} className="space-y-4" autoComplete="off">
-                  {/* Input 1: User ID or Gmail */}
-                  <div className="space-y-1.5">
-                    <label className="block text-xs font-bold text-slate-300">
-                      User ID or Gmail Address
-                    </label>
-                    <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                        <User className="w-4 h-4" />
-                      </div>
-                      <input
-                        type="text"
-                        name="cirqlr_login_user_id"
-                        autoComplete="off"
-                        value={loginIdentifier}
-                        onChange={(e) => {
-                          setLoginIdentifier(e.target.value);
-                          setLoginError('');
-                        }}
-                        placeholder="USR-WB-1042 or you@gmail.com"
-                        className="w-full pl-10 pr-3.5 py-3 bg-slate-950/80 border border-slate-700/80 rounded-xl text-white text-xs sm:text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all font-mono"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  {/* Input 2: Password */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-xs font-bold text-slate-300">
-                        Password
-                      </label>
-                      <button
-                        type="button"
-                        onClick={handleStartResetFlow}
-                        className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold cursor-pointer underline transition-colors"
-                      >
-                        Forgot Password?
-                      </button>
-                    </div>
-                    <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                        <Lock className="w-4 h-4" />
-                      </div>
-                      <input
-                        type={showLoginPassword ? 'text' : 'password'}
-                        name="cirqlr_login_password"
-                        autoComplete="off"
-                        value={loginPassword}
-                        onChange={(e) => {
-                          setLoginPassword(e.target.value);
-                          setLoginError('');
-                        }}
-                        placeholder="Enter your account password"
-                        className="w-full pl-10 pr-10 py-3 bg-slate-950/80 border border-slate-700/80 rounded-xl text-white text-xs sm:text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all"
-                        required
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowLoginPassword(!showLoginPassword)}
-                        className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-200 cursor-pointer"
-                        title={showLoginPassword ? 'Hide password' : 'Show password'}
-                      >
-                        {showLoginPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-
+                {/* Login Method Toggle: Password vs Gmail OTP */}
+                <div className="grid grid-cols-2 gap-2 p-1 bg-slate-950/80 rounded-xl border border-slate-800">
                   <button
-                    type="submit"
-                    disabled={isLoggingIn}
-                    className="w-full py-3.5 bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    type="button"
+                    onClick={() => {
+                      setLoginMethod('password');
+                      setLoginError('');
+                    }}
+                    className={`py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      loginMethod === 'password'
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
                   >
-                    {isLoggingIn ? (
-                      <>
-                        <RotateCw className="w-4 h-4 animate-spin" />
-                        <span>Verifying Credentials...</span>
-                      </>
-                    ) : (
-                      <>
-                        <span>Log In to Account</span>
-                        <ArrowRight className="w-4 h-4" />
-                      </>
-                    )}
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Password</span>
                   </button>
-                </form>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLoginMethod('otp');
+                      setLoginError('');
+                    }}
+                    className={`py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      loginMethod === 'otp'
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Mail className="w-3.5 h-3.5" />
+                    <span>Gmail OTP</span>
+                  </button>
+                </div>
+
+                {loginMethod === 'password' ? (
+                  <form onSubmit={handlePasswordLoginSubmit} className="space-y-4" autoComplete="off">
+                    {/* Input 1: User ID or Gmail */}
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-slate-300">
+                        User ID or Gmail Address
+                      </label>
+                      <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                          <User className="w-4 h-4" />
+                        </div>
+                        <input
+                          type="text"
+                          name="cirqlr_login_user_id"
+                          autoComplete="off"
+                          value={loginIdentifier}
+                          onChange={(e) => {
+                            setLoginIdentifier(e.target.value);
+                            setLoginError('');
+                          }}
+                          placeholder="USR-WB-1042 or you@gmail.com"
+                          className="w-full pl-10 pr-3.5 py-3 bg-slate-950/80 border border-slate-700/80 rounded-xl text-white text-xs sm:text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all font-mono"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    {/* Input 2: Password */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xs font-bold text-slate-300">
+                          Password
+                        </label>
+                        <button
+                          type="button"
+                          onClick={handleStartResetFlow}
+                          className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold cursor-pointer underline transition-colors"
+                        >
+                          Forgot Password?
+                        </button>
+                      </div>
+                      <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                          <Lock className="w-4 h-4" />
+                        </div>
+                        <input
+                          type={showLoginPassword ? 'text' : 'password'}
+                          name="cirqlr_login_password"
+                          autoComplete="off"
+                          value={loginPassword}
+                          onChange={(e) => {
+                            setLoginPassword(e.target.value);
+                            setLoginError('');
+                          }}
+                          placeholder="Enter your account password"
+                          className="w-full pl-10 pr-10 py-3 bg-slate-950/80 border border-slate-700/80 rounded-xl text-white text-xs sm:text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all"
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowLoginPassword(!showLoginPassword)}
+                          className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-200 cursor-pointer"
+                          title={showLoginPassword ? 'Hide password' : 'Show password'}
+                        >
+                          {showLoginPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isLoggingIn}
+                      className="w-full py-3.5 bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      {isLoggingIn ? (
+                        <>
+                          <RotateCw className="w-4 h-4 animate-spin" />
+                          <span>Verifying Credentials...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Log In to Account</span>
+                          <ArrowRight className="w-4 h-4" />
+                        </>
+                      )}
+                    </button>
+                  </form>
+                ) : (
+                  /* Gmail OTP Login Form */
+                  <div className="space-y-4">
+                    {!loginOtpSent ? (
+                      <form onSubmit={handleSendLoginOtp} className="space-y-4">
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-bold text-slate-300">
+                            User ID or Registered Gmail Address
+                          </label>
+                          <div className="relative">
+                            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                              <Mail className="w-4 h-4" />
+                            </div>
+                            <input
+                              type="text"
+                              value={loginIdentifier}
+                              onChange={(e) => {
+                                setLoginIdentifier(e.target.value);
+                                setLoginError('');
+                              }}
+                              placeholder="USR-WB-1042 or you@gmail.com"
+                              className="w-full pl-10 pr-3.5 py-3 bg-slate-950/80 border border-slate-700/80 rounded-xl text-white text-xs sm:text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all font-mono"
+                              required
+                            />
+                          </div>
+                          <p className="text-[11px] text-slate-500">
+                            We will send a 6-digit OTP passcode to your registered Gmail address.
+                          </p>
+                        </div>
+
+                        <button
+                          type="submit"
+                          disabled={isSendingLoginOtp}
+                          className="w-full py-3.5 bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                        >
+                          {isSendingLoginOtp ? (
+                            <>
+                              <RotateCw className="w-4 h-4 animate-spin" />
+                              <span>Sending OTP...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Send className="w-4 h-4" />
+                              <span>Send OTP</span>
+                            </>
+                          )}
+                        </button>
+                      </form>
+                    ) : (
+                      /* OTP Code Entry View */
+                      <form onSubmit={handleVerifyLoginOtp} className="space-y-4 animate-fadeIn">
+                        <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800 text-xs text-slate-300 space-y-1">
+                          <div className="flex items-center justify-between text-slate-400">
+                            <span>OTP passcode sent to:</span>
+                            <span className="font-mono text-cyan-300 font-bold">{maskEmail(loginUserFound?.email)}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            Valid for 10 minutes. Check your inbox and spam folder.
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-bold text-slate-300">
+                            Enter 6-Digit OTP Passcode
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={6}
+                            value={loginEnteredOtp}
+                            onChange={(e) => {
+                              setLoginEnteredOtp(e.target.value.replace(/\D/g, ''));
+                              setLoginError('');
+                            }}
+                            placeholder="• • • • • •"
+                            className="w-full py-3 text-center tracking-[0.5em] font-mono text-lg bg-slate-950/90 border border-slate-700 rounded-xl text-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                            autoFocus
+                            required
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-slate-500">
+                            {loginOtpTimer > 0 ? `Resend code in ${loginOtpTimer}s` : 'Did not receive code?'}
+                          </span>
+                          {loginOtpTimer === 0 && (
+                            <button
+                              type="button"
+                              onClick={handleResendLoginOtp}
+                              disabled={isSendingLoginOtp}
+                              className="text-cyan-400 hover:underline font-bold cursor-pointer disabled:opacity-50"
+                            >
+                              Resend OTP
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLoginOtpSent(false);
+                              setLoginEnteredOtp('');
+                              setLoginError('');
+                            }}
+                            className="px-3.5 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl cursor-pointer"
+                          >
+                            ← Back
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={loginEnteredOtp.trim().length !== 6}
+                            className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Verify OTP & Log In</span>
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               /* 3-STEP PASSWORD RESET SUB-VIEW */
@@ -892,12 +1164,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                       {isResetSubmitting ? (
                         <>
                           <RotateCw className="w-4 h-4 animate-spin" />
-                          <span>Dispatching Reset OTP...</span>
+                          <span>Sending OTP...</span>
                         </>
                       ) : (
                         <>
-                          <span>Send Reset OTP</span>
-                          <ArrowRight className="w-4 h-4" />
+                          <Send className="w-4 h-4" />
+                          <span>Send OTP</span>
                         </>
                       )}
                     </button>
@@ -1754,12 +2026,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                         {isSendingOtp ? (
                           <>
                             <RotateCw className="w-4 h-4 animate-spin" />
-                            <span>Sending Gmail OTP...</span>
+                            <span>Sending OTP...</span>
                           </>
                         ) : (
                           <>
-                            <span>Continue to OTP Verification</span>
-                            <ArrowRight className="w-4 h-4" />
+                            <Send className="w-4 h-4" />
+                            <span>Send OTP</span>
                           </>
                         )}
                       </button>

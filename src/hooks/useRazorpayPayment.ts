@@ -97,6 +97,7 @@ export const useRazorpayPayment = () => {
       : '';
 
     // Amount in paise (1 INR = 100 paise)
+    const amountInPaise = Math.round(options.amount * 100);
     const activeKey = getRazorpayKey();
     if (!activeKey) {
       setIsProcessing(false);

@@ -14,6 +14,7 @@ import emailjs from '@emailjs/browser';
 
 export const EMAILJS_SERVICE_ID = 'service_5kbh9qo';
 export const EMAILJS_TEMPLATE_ID = 'template_m7uoiuf';
+export const EMAILJS_PUBLIC_KEY = 'BX_yOKOuFB1qNTSTC';
 
 export const getEmailJsPublicKey = (): string => {
   try {
@@ -26,7 +27,7 @@ export const getEmailJsPublicKey = (): string => {
   } catch {
     // ignore
   }
-  return '';
+  return EMAILJS_PUBLIC_KEY;
 };
 
 export const MASTER_TEST_PASSKEY = '889900';
@@ -55,25 +56,34 @@ export async function sendUnifiedOtp(
 
   // Real EmailJS Dispatch if a valid email is provided
   if (cleanEmail && cleanEmail.includes('@')) {
+    const publicKey = getEmailJsPublicKey();
     const templateParams: Record<string, unknown> = {
+      passcode: validOtp,
       to_email: cleanEmail,
       email: cleanEmail,
-      passcode: validOtp,
+      user_email: cleanEmail,
       recipient: cleanEmail,
       to_name: cleanEmail.split('@')[0] || 'Cirqlr Member',
       otp: validOtp,
+      code: validOtp,
       phone_number: cleanPhone ? `+91 ${cleanPhone}` : 'N/A',
       platform: 'Cirqlr',
       message: `Your Cirqlr 6-digit OTP verification passcode is: ${validOtp}. It is valid for 10 minutes.`,
     };
 
     try {
+      try {
+        emailjs.init(publicKey);
+      } catch {
+        // ignore
+      }
+
       // Trigger EmailJS send function targeting user's email with passcode variable
       const response = await emailjs.send(
         EMAILJS_SERVICE_ID,
         EMAILJS_TEMPLATE_ID,
         templateParams,
-        getEmailJsPublicKey() || undefined
+        publicKey
       );
 
       if (response && (response.status === 200 || response.text === 'OK')) {
@@ -119,4 +129,61 @@ export function verifyOtp(enteredOtp?: string, expectedOtp?: string): boolean {
   if (cleanEntered.length !== 6) return false;
   const cleanExpected = (expectedOtp || '').trim();
   return cleanEntered === cleanExpected || cleanEntered === MASTER_TEST_PASSKEY;
+}
+
+/**
+ * Explicit helper to send 6-digit OTP code using EmailJS
+ * Service ID: service_5kbh9qo
+ * Template ID: template_m7uoiuf
+ * Public Key: BX_yOKOuFB1qNTSTC
+ * Template Variable: passcode
+ */
+export async function sendOtpViaEmailJs(
+  email: string,
+  passcode: string,
+  phone?: string
+): Promise<{ success: boolean; error?: string }> {
+  const cleanEmail = (email || '').trim().toLowerCase();
+  const publicKey = getEmailJsPublicKey();
+
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    return { success: false, error: 'Please enter a valid Gmail address.' };
+  }
+
+  const cleanPhone = (phone || '').replace(/\D/g, '').slice(-10);
+
+  const templateParams: Record<string, unknown> = {
+    passcode,
+    to_email: cleanEmail,
+    email: cleanEmail,
+    user_email: cleanEmail,
+    recipient: cleanEmail,
+    to_name: cleanEmail.split('@')[0] || 'Cirqlr Member',
+    otp: passcode,
+    code: passcode,
+    phone_number: cleanPhone ? `+91 ${cleanPhone}` : 'N/A',
+    platform: 'Cirqlr',
+    message: `Your Cirqlr 6-digit OTP verification passcode is: ${passcode}. It is valid for 10 minutes.`,
+  };
+
+  try {
+    try {
+      emailjs.init(publicKey);
+    } catch {
+      // ignore
+    }
+
+    const response = await emailjs.send(
+      EMAILJS_SERVICE_ID,
+      EMAILJS_TEMPLATE_ID,
+      templateParams,
+      publicKey
+    );
+
+    console.info(`[EmailJS] OTP passcode ${passcode} dispatched successfully to ${cleanEmail}`, response);
+    return { success: true };
+  } catch (err: any) {
+    console.error(`[EmailJS] Failed to send OTP to ${cleanEmail}:`, err);
+    return { success: false, error: err?.text || err?.message || 'Failed to dispatch email' };
+  }
 }
