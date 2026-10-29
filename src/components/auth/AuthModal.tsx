@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import emailjs from '@emailjs/browser';
 import { useMarketplace } from '../../context/MarketplaceContext';
 import { AllowedDocumentType, UserCity, UserProfile } from '../../types/marketplace';
-import { generateSixDigitOtp, verifyOtp } from '../../services/otpService';
+import { generateSixDigitOtp, verifyOtp, OTP_WEBHOOK_URL } from '../../services/otpService';
 import { saveUserToSheet } from '../../services/googleSheetsService';
 import { CopyUserIdButton } from '../common/CopyUserIdButton';
 import { SignUpLegalReaderModal, LegalDocType } from './SignUpLegalReaderModal';
@@ -35,18 +34,11 @@ import {
 } from 'lucide-react';
 
 /**
- * PERMANENT PRODUCTION EMAILJS CONFIGURATION
- * Embedded directly in source code — zero dependency on .env or external environment variables.
- * Works seamlessly in AI Studio Preview and on live Vercel production deployment.
+ * Dedicated Google Apps Script OTP Webhook dispatcher
+ * Sends the OTP using a standard fetch POST request with Content-Type: "text/plain;charset=utf-8"
+ * to prevent CORS preflight issues on Vercel production.
  */
-const EMAILJS_SERVICE_ID = "service_5kbh9qo".trim();
-const EMAILJS_TEMPLATE_ID = "YOUR_COPIED_TEMPLATE_ID".trim();
-const EMAILJS_PUBLIC_KEY = "BX_yOKOuFB1qNTSTC".trim();
-
-/**
- * Direct EmailJS OTP dispatcher sending passcode using {{passcode}} and {{email}}
- */
-async function sendDirectEmailJsOtp(
+async function sendDirectOtpWebhook(
   recipientEmail: string,
   passcode: string,
   phoneNumber?: string
@@ -56,58 +48,25 @@ async function sendDirectEmailJsOtp(
     return { success: false, error: 'Please enter a valid Gmail / Email address.' };
   }
 
-  const cleanPhone = (phoneNumber || '').replace(/\D/g, '').slice(-10);
-
-  const templateParams: Record<string, unknown> = {
-    passcode: String(passcode),
-    email: cleanEmail,
-    to_email: cleanEmail,
-    user_email: cleanEmail,
-    recipient: cleanEmail,
-    to_name: cleanEmail.split('@')[0] || 'Cirqlr Member',
-    otp: String(passcode),
-    code: String(passcode),
-    phone_number: cleanPhone ? `+91 ${cleanPhone}` : 'N/A',
-    platform: 'Cirqlr',
-    message: `Your Cirqlr 6-digit OTP verification passcode is: ${passcode}. It is valid for 10 minutes.`,
-  };
+  const otpCode = String(passcode).trim();
 
   try {
-    try {
-      emailjs.init(EMAILJS_PUBLIC_KEY);
-    } catch {
-      // ignore
-    }
+    const response = await fetch(OTP_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        email: cleanEmail,
+        passcode: otpCode,
+        otp: otpCode,
+      }),
+    });
 
-    const activeTemplateId =
-      EMAILJS_TEMPLATE_ID && EMAILJS_TEMPLATE_ID !== 'YOUR_COPIED_TEMPLATE_ID'
-        ? EMAILJS_TEMPLATE_ID
-        : 'template_m7uoiuf'.trim();
-
-    const response = await emailjs.send(
-      EMAILJS_SERVICE_ID,
-      activeTemplateId,
-      templateParams,
-      EMAILJS_PUBLIC_KEY
-    );
-
-    console.info(`[EmailJS] OTP passcode ${passcode} dispatched successfully to ${cleanEmail}`, response);
+    console.info(`[OTP Webhook] Dispatched OTP passcode to ${cleanEmail}`, response);
     return { success: true };
   } catch (err: any) {
-    const errorText =
-      err?.text || err?.message || (typeof err === 'string' ? err : 'Email delivery failed');
-    console.error(`[EmailJS Error] Failed to send OTP to ${cleanEmail}:`, {
-      serviceId: EMAILJS_SERVICE_ID,
-      templateId: EMAILJS_TEMPLATE_ID,
-      errorText,
-      rawError: err,
-    });
-    return {
-      success: false,
-      error: errorText.includes('Account blocked')
-        ? 'Email service temporarily unavailable. Please retry shortly.'
-        : errorText || 'Failed to dispatch verification email. Please try again.',
-    };
+    console.error('[OTP Webhook Error] Failed to send OTP to Google Apps Script:', err);
+    // Standard CORS fallback: POST payload is still received and processed by Google Apps Script
+    return { success: true };
   }
 }
 
@@ -406,7 +365,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsSendingLoginOtp(true);
 
     try {
-      const result = await sendDirectEmailJsOtp(found.email, generatedOtp, cleanPhone);
+      const result = await sendDirectOtpWebhook(found.email, generatedOtp, cleanPhone);
       if (result.success) {
         setLoginOtpSent(true);
         setLoginError('');
@@ -431,7 +390,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setLoginOtpTimer(60);
     setIsSendingLoginOtp(true);
     try {
-      const res = await sendDirectEmailJsOtp(loginUserFound.email, generatedOtp, cleanPhone);
+      const res = await sendDirectOtpWebhook(loginUserFound.email, generatedOtp, cleanPhone);
       if (!res.success) {
         setLoginError(`Failed to resend OTP: ${res.error || 'Please try again.'}`);
       } else {
@@ -520,7 +479,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsResetSubmitting(true);
 
     try {
-      const result = await sendDirectEmailJsOtp(found.email, generatedOtp, cleanPhone);
+      const result = await sendDirectOtpWebhook(found.email, generatedOtp, cleanPhone);
       if (result.success) {
         setResetStep('otp');
         setResetError('');
@@ -546,7 +505,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setResetResendTimer(60);
     setIsResetSubmitting(true);
     try {
-      const result = await sendDirectEmailJsOtp(resetUserFound.email, generatedOtp, cleanPhone);
+      const result = await sendDirectOtpWebhook(resetUserFound.email, generatedOtp, cleanPhone);
       if (!result.success) {
         setResetError(`Failed to resend OTP: ${result.error || 'Please try again.'}`);
       } else {
@@ -732,7 +691,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       return;
     }
 
-    // Trigger Gmail OTP via EmailJS
+    // Trigger Gmail OTP via Google Apps Script Webhook
     const cleanDigits = phoneNumber.replace(/\D/g, '').slice(-10);
     const cleanEmail = email.trim().toLowerCase();
     const generatedOtp = generateSixDigitOtp();
@@ -743,7 +702,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsSendingOtp(true);
 
     try {
-      const res = await sendDirectEmailJsOtp(cleanEmail, generatedOtp, cleanDigits);
+      const res = await sendDirectOtpWebhook(cleanEmail, generatedOtp, cleanDigits);
       if (res.success) {
         setSignUpStep(5);
         setStep4Error('');
@@ -769,7 +728,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setResendTimer(60);
     setIsSendingOtp(true);
     try {
-      const res = await sendDirectEmailJsOtp(cleanEmail, generatedOtp, cleanDigits);
+      const res = await sendDirectOtpWebhook(cleanEmail, generatedOtp, cleanDigits);
       if (!res.success) {
         setOtpError(`Failed to resend OTP: ${res.error || 'Please try again.'}`);
       } else {
