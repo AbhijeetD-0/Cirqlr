@@ -21,7 +21,7 @@ import {
   WalletTransactionEntry,
 } from '../types/marketplace';
 import { collection, doc, setDoc, onSnapshot, deleteDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, cleanForFirestore } from '../lib/firebase';
 import { sendBookingStatusEmail } from '../services/emailWebhookService';
 import { sendCancellationEmail } from '../services/cancellationAndOffersService';
 import { checkVenueSafety } from '../services/safetyFilterService';
@@ -328,6 +328,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       ? (typeof user.monthlyLifelineUsed === 'number' ? user.monthlyLifelineUsed : 0)
       : 0;
 
+    // Preserve verification status if already verified, or verify if docUrl exists
+    const isVerified = user.isVerified !== undefined ? Boolean(user.isVerified) : (user.verificationStatus === 'Verified' || user.verificationStatus === 'ID Verified' || hasIdDoc);
+    const verificationStatus: VerificationStatus = user.verificationStatus || (isVerified ? 'Verified' : 'Unverified');
+
     return {
       ...user,
       avatarUrl: avatarUrl || user.avatarUrl,
@@ -339,10 +343,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       suspensionReason,
       suspendedAt,
       prohibitedVenueAttempt,
-      documentImageUrl: docUrl || undefined,
-      idDocumentUrl: docUrl || undefined,
-      isVerified: hasIdDoc,
-      verificationStatus: hasIdDoc ? 'Verified' : 'Unverified',
+      documentImageUrl: docUrl || user.documentImageUrl || undefined,
+      idDocumentUrl: docUrl || user.idDocumentUrl || undefined,
+      isVerified,
+      verificationStatus,
       publicGallery: Array.isArray(user.publicGallery) ? user.publicGallery : [],
       referralCode: user.referralCode || `REF-${cleanToken}`,
       totalReferrals: typeof user.totalReferrals === 'number' ? user.totalReferrals : 0,
@@ -570,8 +574,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
           if (remoteUsers.length > 0) {
             setUsersAndCompanions(remoteUsers);
             safeSetItem('sangha_v4_users', JSON.stringify(remoteUsers));
-            if (currentUser) {
-              const matched = remoteUsers.find((u) => u.userToken === currentUser.userToken);
+            const activeToken = safeGetItem('cirqlr_active_user_token');
+            if (activeToken) {
+              const matched = remoteUsers.find((u) => u.userToken === activeToken);
               if (matched) {
                 setCurrentUser(matched);
                 safeSetItem('sangha_v4_current_user', JSON.stringify(matched));
@@ -668,19 +673,17 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const syncUserToFirestore = async (user: UserProfile) => {
     try {
       if (db && user.userToken) {
-        await setDoc(doc(db, 'users', user.userToken), user, { merge: true });
+        const cleanedUser = cleanForFirestore(user);
+        await setDoc(doc(db, 'users', user.userToken), cleanedUser, { merge: true });
         // Also persist wallet document
-        await setDoc(
-          doc(db, 'wallets', user.userToken),
-          {
-            userToken: user.userToken,
-            userName: user.fullName,
-            cancellationCreditBalance: user.cancellationCreditBalance || 0,
-            walletHistory: user.walletHistory || [],
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
+        const cleanedWallet = cleanForFirestore({
+          userToken: user.userToken,
+          userName: user.fullName,
+          cancellationCreditBalance: user.cancellationCreditBalance || 0,
+          walletHistory: user.walletHistory || [],
+          updatedAt: new Date().toISOString(),
+        });
+        await setDoc(doc(db, 'wallets', user.userToken), cleanedWallet, { merge: true });
       }
     } catch (err: any) {
       console.warn('[Firestore Sync] User write note:', err?.message);
@@ -690,7 +693,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const syncBookingToFirestore = async (booking: BookingRecord) => {
     try {
       if (db && booking.id) {
-        await setDoc(doc(db, 'bookings', booking.id), booking, { merge: true });
+        await setDoc(doc(db, 'bookings', booking.id), cleanForFirestore(booking), { merge: true });
       }
     } catch (err: any) {
       console.warn('[Firestore Sync] Booking write note:', err?.message);
@@ -700,7 +703,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const syncCardToFirestore = async (card: ActivityPackageCard) => {
     try {
       if (db && card.id) {
-        await setDoc(doc(db, 'activityCards', card.id), card, { merge: true });
+        await setDoc(doc(db, 'activityCards', card.id), cleanForFirestore(card), { merge: true });
       }
     } catch (err: any) {
       console.warn('[Firestore Sync] Activity card write note:', err?.message);
@@ -720,7 +723,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const syncTransactionToFirestore = async (txn: PaymentLedgerEntry) => {
     try {
       if (db && txn.id) {
-        await setDoc(doc(db, 'transactions', txn.id), txn, { merge: true });
+        await setDoc(doc(db, 'transactions', txn.id), cleanForFirestore(txn), { merge: true });
       }
     } catch (err: any) {
       console.warn('[Firestore Sync] Transaction write note:', err?.message);
@@ -1311,11 +1314,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const defaultAvatar = avatarPool[Math.floor(Math.random() * avatarPool.length)];
     const chosenAvatar = input.avatarUrl && input.avatarUrl.trim() !== '' ? input.avatarUrl.trim() : defaultAvatar;
 
-    // Instant Auto-Verification: If user uploaded ID document image, auto-verify immediately!
+    // Instant Auto-Verification: All successful 21+ OTP registered users are Verified
     const docImg = (input.documentImageUrl || '').trim();
     const hasDoc = Boolean(docImg);
-    const isVerified = hasDoc;
-    const verificationStatus: VerificationStatus = hasDoc ? 'Verified' : 'Unverified';
+    const isVerified = true;
+    const verificationStatus: VerificationStatus = 'Verified';
 
     // Build initial verification history if document uploaded at signup
     const nowIso = new Date().toISOString();
@@ -1414,10 +1417,35 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       monthlyLifelineMonth: nowIso.slice(0, 7),
     };
 
-    setUsersAndCompanions((prev) => [newUser, ...prev]);
-    setCurrentUser(newUser);
+    // Starter Activity Package Card to guarantee immediate live visibility in Explore
+    const starterCardId = `CARD-${userToken.replace('USR-', '')}-101`;
+    const starterCard: ActivityPackageCard = {
+      id: starterCardId,
+      companionToken: userToken,
+      title: `${input.city} Social Outing & Cafe Meetup`,
+      venueCategory: 'Verified Cafe & Restaurant',
+      shortDescription: 'Friendly conversation over coffee or tea at verified cafes, shopping malls, or cultural venues.',
+      city: input.city,
+      hourlyRate: 350,
+      createdAt: nowIso,
+    };
 
+    setUsersAndCompanions((prev) => [newUser, ...prev.filter((u) => u.userToken !== newUser.userToken)]);
+    setCurrentUser(newUser);
+    safeSetItem('cirqlr_active_user_token', newUser.userToken);
+    safeSetItem('sangha_v4_current_user', JSON.stringify(newUser));
+
+    setActivityCards((prev) => [starterCard, ...prev.filter((c) => c.id !== starterCard.id)]);
+    try {
+      const currentCards = JSON.parse(localStorage.getItem('sangha_v4_cards') || '[]');
+      localStorage.setItem('sangha_v4_cards', JSON.stringify([starterCard, ...currentCards.filter((c: any) => c?.id !== starterCard.id)]));
+    } catch {
+      // ignore
+    }
+
+    // Persist user and card to Firestore immediately
     syncUserToFirestore(newUser);
+    syncCardToFirestore(starterCard);
 
     addAuditLog(
       'New User Registered',

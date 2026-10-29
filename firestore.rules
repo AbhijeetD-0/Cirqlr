@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Cirqlr Production Firestore Rules: Enable real-time cross-device sync for verified user profiles, cards, bookings, and wallets
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

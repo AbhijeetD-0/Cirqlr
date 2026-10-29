@@ -74,19 +74,16 @@ export const BookerView: React.FC = () => {
   // + Explicit Gender filter, City filter, and Category filter!
   const verifiedLiveCompanions = useMemo(() => {
     return usersAndCompanions.filter((comp) => {
-      // Don't show current user as bookable companion for self
-      if (currentUser && comp.userToken === currentUser.userToken) return false;
+      // Condition a: Account must be in good standing (not Suspended or Deleted_Archived)
+      const isAccountGood = comp.accountStatus !== 'Suspended' && comp.accountStatus !== 'Deleted_Archived';
+      if (!isAccountGood) return false;
 
-      // Condition a & b: Strict verification (requires uploaded ID document image) & active status gate
+      // Condition b: Verification check (verified OTP signup or ID document uploaded/verified)
       const hasIdDocument = Boolean((comp.documentImageUrl || comp.idDocumentUrl || '').trim());
-      const isIdVerified = hasIdDocument && (comp.isVerified || comp.verificationStatus === 'Verified' || comp.verificationStatus === 'ID Verified');
-      const isAccountGood = comp.accountStatus === 'Active' || comp.accountStatus === 'Warned';
-      if (!isIdVerified || !isAccountGood) return false;
+      const isIdVerified = comp.isVerified || comp.verificationStatus === 'Verified' || comp.verificationStatus === 'ID Verified' || hasIdDocument;
+      if (!isIdVerified) return false;
 
-      // Condition c: STRICT REQUIREMENT - Must have created at least 1 Activity Package Card
-      // Empty profiles must remain hidden from the public explore grid
       const cards = getCompanionActivityCards(comp.userToken);
-      if (cards.length === 0) return false;
 
       // Explicit Gender Filter (Smart Default with 100% User Override)
       if (selectedGender !== 'All' && comp.gender !== selectedGender) {
@@ -99,7 +96,7 @@ export const BookerView: React.FC = () => {
       // Filter by category
       if (selectedCategory !== 'All') {
         const cardHasCategory = cards.some((c) => c.venueCategory === selectedCategory);
-        const profileHasCategory = comp.outingCategories.includes(selectedCategory);
+        const profileHasCategory = comp.outingCategories?.includes(selectedCategory);
         if (!cardHasCategory && !profileHasCategory) return false;
       }
 
@@ -107,14 +104,14 @@ export const BookerView: React.FC = () => {
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchesName = comp.fullName.toLowerCase().includes(q);
-        const matchesBio = comp.bio.toLowerCase().includes(q);
-        const matchesCity = comp.city.toLowerCase().includes(q);
-        const matchesLang = comp.languages.some((l) => l.toLowerCase().includes(q));
-        const matchesInterests = comp.interests.some((i) => i.toLowerCase().includes(q));
-        const matchesAreas = comp.serviceAreas.some((a) => a.toLowerCase().includes(q));
+        const matchesBio = (comp.bio || '').toLowerCase().includes(q);
+        const matchesCity = (comp.city || '').toLowerCase().includes(q);
+        const matchesLang = (comp.languages || []).some((l) => l.toLowerCase().includes(q));
+        const matchesInterests = (comp.interests || []).some((i) => i.toLowerCase().includes(q));
+        const matchesAreas = (comp.serviceAreas || []).some((a) => a.toLowerCase().includes(q));
         
         const matchesCards = cards.some(
-          (c) => c.title.toLowerCase().includes(q) || c.shortDescription.toLowerCase().includes(q)
+          (c) => (c.title || '').toLowerCase().includes(q) || (c.shortDescription || '').toLowerCase().includes(q)
         );
 
         if (!matchesName && !matchesBio && !matchesCity && !matchesLang && !matchesInterests && !matchesAreas && !matchesCards) {
@@ -141,6 +138,10 @@ export const BookerView: React.FC = () => {
     }
     if (currentUser.accountStatus === 'Suspended') {
       openSuspensionNotice(currentUser);
+      return;
+    }
+    if (currentUser.userToken === companion.userToken) {
+      handleOpenProfile(companion);
       return;
     }
     setSelectedCompanionForProfile(null);
@@ -485,8 +486,13 @@ export const BookerView: React.FC = () => {
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-1">
-                            <h3 className="font-bold text-white text-sm truncate group-hover/profile:text-cyan-300 transition-colors flex items-center gap-1">
+                            <h3 className="font-bold text-white text-sm truncate group-hover/profile:text-cyan-300 transition-colors flex items-center gap-1.5">
                               <span>{companion.fullName}</span>
+                              {currentUser && companion.userToken === currentUser.userToken && (
+                                <span className="px-1.5 py-0.5 rounded-full bg-cyan-950/90 text-cyan-300 border border-cyan-500/60 text-[9px] font-black uppercase tracking-wider">
+                                  You
+                                </span>
+                              )}
                               <ExternalLink className="w-3 h-3 text-slate-400 group-hover/profile:text-cyan-300 opacity-0 group-hover/profile:opacity-100 transition-opacity" />
                             </h3>
                             <CopyUserIdButton
@@ -579,9 +585,13 @@ export const BookerView: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleRequestOuting(companion)}
-                        className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-indigo-600/30 cursor-pointer"
+                        className={`px-4 py-2 text-white text-xs font-bold rounded-xl transition-all shadow-md cursor-pointer ${
+                          currentUser && companion.userToken === currentUser.userToken
+                            ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-600/30'
+                            : 'bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 shadow-indigo-600/30'
+                        }`}
                       >
-                        Request Outing
+                        {currentUser && companion.userToken === currentUser.userToken ? 'Your Profile' : 'Request Outing'}
                       </button>
                     </div>
                   </div>
