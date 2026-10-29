@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import emailjs from '@emailjs/browser';
 import { useMarketplace } from '../../context/MarketplaceContext';
 import { AllowedDocumentType, UserCity, UserProfile } from '../../types/marketplace';
-import { sendUnifiedOtp, sendOtpViaEmailJs, generateSixDigitOtp, verifyOtp } from '../../services/otpService';
+import { generateSixDigitOtp, verifyOtp } from '../../services/otpService';
 import { saveUserToSheet } from '../../services/googleSheetsService';
 import { CopyUserIdButton } from '../common/CopyUserIdButton';
 import { SignUpLegalReaderModal, LegalDocType } from './SignUpLegalReaderModal';
@@ -32,6 +33,78 @@ import {
   Home,
   Send
 } from 'lucide-react';
+
+/**
+ * PERMANENT PRODUCTION EMAILJS CONFIGURATION
+ * Embedded directly in source code — zero dependency on .env or external environment variables.
+ * Works seamlessly in AI Studio Preview and on live Vercel production deployment.
+ */
+const EMAILJS_SERVICE_ID = 'service_5kbh9qo';
+const EMAILJS_TEMPLATE_ID = 'template_m7uoiuf';
+const EMAILJS_PUBLIC_KEY = 'BX_yOKOuFB1qNTSTC';
+
+/**
+ * Direct EmailJS OTP dispatcher sending passcode using {{passcode}} and {{email}}
+ */
+async function sendDirectEmailJsOtp(
+  recipientEmail: string,
+  passcode: string,
+  phoneNumber?: string
+): Promise<{ success: boolean; error?: string }> {
+  const cleanEmail = (recipientEmail || '').trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    return { success: false, error: 'Please enter a valid Gmail / Email address.' };
+  }
+
+  const cleanPhone = (phoneNumber || '').replace(/\D/g, '').slice(-10);
+
+  const templateParams: Record<string, unknown> = {
+    passcode: String(passcode),
+    email: cleanEmail,
+    to_email: cleanEmail,
+    user_email: cleanEmail,
+    recipient: cleanEmail,
+    to_name: cleanEmail.split('@')[0] || 'Cirqlr Member',
+    otp: String(passcode),
+    code: String(passcode),
+    phone_number: cleanPhone ? `+91 ${cleanPhone}` : 'N/A',
+    platform: 'Cirqlr',
+    message: `Your Cirqlr 6-digit OTP verification passcode is: ${passcode}. It is valid for 10 minutes.`,
+  };
+
+  try {
+    try {
+      emailjs.init(EMAILJS_PUBLIC_KEY);
+    } catch {
+      // ignore
+    }
+
+    const response = await emailjs.send(
+      EMAILJS_SERVICE_ID,
+      EMAILJS_TEMPLATE_ID,
+      templateParams,
+      EMAILJS_PUBLIC_KEY
+    );
+
+    console.info(`[EmailJS] OTP passcode ${passcode} dispatched successfully to ${cleanEmail}`, response);
+    return { success: true };
+  } catch (err: any) {
+    const errorText =
+      err?.text || err?.message || (typeof err === 'string' ? err : 'Email delivery failed');
+    console.error(`[EmailJS Error] Failed to send OTP to ${cleanEmail}:`, {
+      serviceId: EMAILJS_SERVICE_ID,
+      templateId: EMAILJS_TEMPLATE_ID,
+      errorText,
+      rawError: err,
+    });
+    return {
+      success: false,
+      error: errorText.includes('Account blocked')
+        ? 'Email service temporarily unavailable. Please retry shortly.'
+        : errorText || 'Failed to dispatch verification email. Please try again.',
+    };
+  }
+}
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -328,7 +401,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsSendingLoginOtp(true);
 
     try {
-      const result = await sendOtpViaEmailJs(found.email, generatedOtp, cleanPhone);
+      const result = await sendDirectEmailJsOtp(found.email, generatedOtp, cleanPhone);
       if (result.success) {
         setLoginOtpSent(true);
         setLoginError('');
@@ -353,7 +426,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setLoginOtpTimer(60);
     setIsSendingLoginOtp(true);
     try {
-      const res = await sendOtpViaEmailJs(loginUserFound.email, generatedOtp, cleanPhone);
+      const res = await sendDirectEmailJsOtp(loginUserFound.email, generatedOtp, cleanPhone);
       if (!res.success) {
         setLoginError(`Failed to resend OTP: ${res.error || 'Please try again.'}`);
       } else {
@@ -442,7 +515,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsResetSubmitting(true);
 
     try {
-      const result = await sendOtpViaEmailJs(found.email, generatedOtp, cleanPhone);
+      const result = await sendDirectEmailJsOtp(found.email, generatedOtp, cleanPhone);
       if (result.success) {
         setResetStep('otp');
         setResetError('');
@@ -468,7 +541,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setResetResendTimer(60);
     setIsResetSubmitting(true);
     try {
-      const result = await sendOtpViaEmailJs(resetUserFound.email, generatedOtp, cleanPhone);
+      const result = await sendDirectEmailJsOtp(resetUserFound.email, generatedOtp, cleanPhone);
       if (!result.success) {
         setResetError(`Failed to resend OTP: ${result.error || 'Please try again.'}`);
       } else {
@@ -665,7 +738,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsSendingOtp(true);
 
     try {
-      const res = await sendOtpViaEmailJs(cleanEmail, generatedOtp, cleanDigits);
+      const res = await sendDirectEmailJsOtp(cleanEmail, generatedOtp, cleanDigits);
       if (res.success) {
         setSignUpStep(5);
         setStep4Error('');
@@ -691,7 +764,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setResendTimer(60);
     setIsSendingOtp(true);
     try {
-      const res = await sendOtpViaEmailJs(cleanEmail, generatedOtp, cleanDigits);
+      const res = await sendDirectEmailJsOtp(cleanEmail, generatedOtp, cleanDigits);
       if (!res.success) {
         setOtpError(`Failed to resend OTP: ${res.error || 'Please try again.'}`);
       } else {

@@ -12,20 +12,12 @@ import emailjs from '@emailjs/browser';
  * - Fallback Passkey: 889900
  */
 
-// Production Credentials - Embedded permanently for preview & Vercel production
+// Permanent Production Credentials - Embedded directly in code without .env dependency
 export const EMAILJS_SERVICE_ID = 'service_5kbh9qo';
 export const EMAILJS_TEMPLATE_ID = 'template_m7uoiuf';
 export const EMAILJS_PUBLIC_KEY = 'BX_yOKOuFB1qNTSTC';
 
-export const getEmailJsPublicKey = (): string => {
-  try {
-    const envKey = (import.meta.env.VITE_EMAILJS_PUBLIC_KEY as string) || '';
-    if (envKey && envKey.trim()) return envKey.trim();
-  } catch {
-    // ignore
-  }
-  return EMAILJS_PUBLIC_KEY;
-};
+export const getEmailJsPublicKey = (): string => EMAILJS_PUBLIC_KEY;
 
 export const MASTER_TEST_PASSKEY = '889900';
 
