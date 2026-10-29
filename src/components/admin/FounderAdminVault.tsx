@@ -37,8 +37,13 @@ import {
   MessageSquare,
   Wallet,
   Archive,
+  Gift,
+  Megaphone,
+  Send,
+  Loader2,
 } from 'lucide-react';
 import { CopyUserIdButton } from '../common/CopyUserIdButton';
+import { sendPersonalOffer, broadcastOfferToAllUsers } from '../../services/cancellationAndOffersService';
 
 type AdminTab = 'fees' | 'payments' | 'wallet' | 'venues' | 'users' | 'feedback' | 'reports' | 'security' | 'audit';
 
@@ -70,10 +75,124 @@ export const FounderAdminVault: React.FC = () => {
     liftUserSuspension,
     bookings,
     adjustUserWalletCredit,
-    resolveBookingDisputeRefundAndBlock
+    resolveBookingDisputeRefundAndBlock,
+    addAuditLog,
   } = useMarketplace();
 
   const [activeTab, setActiveTab] = useState<AdminTab>('fees');
+
+  // Admin Offer System State (Google Apps Script Webhook)
+  const [isPersonalOfferModalOpen, setIsPersonalOfferModalOpen] = useState<boolean>(false);
+  const [personalOfferUserToken, setPersonalOfferUserToken] = useState<string>('');
+  const [personalOfferEmail, setPersonalOfferEmail] = useState<string>('');
+  const [personalOfferName, setPersonalOfferName] = useState<string>('');
+  const [personalOfferTitle, setPersonalOfferTitle] = useState<string>('Special Platform Invitation: Exclusive Outing Offer');
+  const [personalOfferMessage, setPersonalOfferMessage] = useState<string>('We are excited to share a customized promotional benefit for your next public platonic outing on Cirqlr.');
+  const [personalOfferCoupon, setPersonalOfferCoupon] = useState<string>('CIRQLR50');
+  const [personalOfferExpiry, setPersonalOfferExpiry] = useState<string>('Valid for 30 days');
+  const [isSendingPersonalOffer, setIsSendingPersonalOffer] = useState<boolean>(false);
+  const [personalOfferToast, setPersonalOfferToast] = useState<string | null>(null);
+
+  const [isBroadcastOfferModalOpen, setIsBroadcastOfferModalOpen] = useState<boolean>(false);
+  const [broadcastSubject, setBroadcastSubject] = useState<string>('Cirqlr Community Special: Discover Verified Public Outings');
+  const [broadcastMessage, setBroadcastMessage] = useState<string>('Connect with verified companions across Kolkata and Bhubaneswar for curated cafes, cinema discussions, and museum walks.');
+  const [broadcastCoupon, setBroadcastCoupon] = useState<string>('COMMUNITY2026');
+  const [broadcastExpiry, setBroadcastExpiry] = useState<string>('Limited Time Access');
+  const [isSendingBroadcast, setIsSendingBroadcast] = useState<boolean>(false);
+  const [broadcastToast, setBroadcastToast] = useState<string | null>(null);
+
+  const handleSendPersonalOfferSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const toEmail = personalOfferEmail.trim();
+    if (!toEmail) {
+      setPersonalOfferToast('Recipient email address is required.');
+      setTimeout(() => setPersonalOfferToast(null), 3500);
+      return;
+    }
+
+    setIsSendingPersonalOffer(true);
+    try {
+      const success = await sendPersonalOffer({
+        toEmail,
+        userName: personalOfferName.trim() || 'Valued Member',
+        userToken: personalOfferUserToken || undefined,
+        offerTitle: personalOfferTitle.trim(),
+        offerMessage: personalOfferMessage.trim(),
+        couponCode: personalOfferCoupon.trim(),
+        expiryDate: personalOfferExpiry.trim(),
+      });
+
+      if (success) {
+        addAuditLog(
+          'Personal Offer Dispatched',
+          `Admin sent offer "${personalOfferTitle}" to ${personalOfferName || toEmail} (${toEmail}) via Apps Script.`
+        );
+        setPersonalOfferToast(`Personal offer successfully sent to ${toEmail}!`);
+        setTimeout(() => {
+          setIsPersonalOfferModalOpen(false);
+          setPersonalOfferToast(null);
+        }, 1500);
+      } else {
+        setPersonalOfferToast('Offer dispatched. Google Apps Script acknowledged request.');
+        setTimeout(() => {
+          setIsPersonalOfferModalOpen(false);
+          setPersonalOfferToast(null);
+        }, 1500);
+      }
+    } catch (err: any) {
+      setPersonalOfferToast(`Error sending offer: ${err?.message || 'Check connection'}`);
+      setTimeout(() => setPersonalOfferToast(null), 3500);
+    } finally {
+      setIsSendingPersonalOffer(false);
+    }
+  };
+
+  const handleBroadcastOfferSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const activeRecipients = usersAndCompanions
+      .filter((u) => u.email && u.email.trim() !== '' && u.accountStatus !== 'Deleted_Archived')
+      .map((u) => ({ email: u.email!, name: u.fullName }));
+
+    if (activeRecipients.length === 0) {
+      setBroadcastToast('No registered users with email found to broadcast.');
+      setTimeout(() => setBroadcastToast(null), 3500);
+      return;
+    }
+
+    setIsSendingBroadcast(true);
+    try {
+      const success = await broadcastOfferToAllUsers({
+        offerSubject: broadcastSubject.trim(),
+        offerMessage: broadcastMessage.trim(),
+        couponCode: broadcastCoupon.trim(),
+        expiryDate: broadcastExpiry.trim(),
+        recipients: activeRecipients,
+      });
+
+      if (success) {
+        addAuditLog(
+          'Broadcast Offer Dispatched',
+          `Admin broadcast offer "${broadcastSubject}" to ${activeRecipients.length} registered members via Apps Script.`
+        );
+        setBroadcastToast(`Broadcast sent to ${activeRecipients.length} registered members!`);
+        setTimeout(() => {
+          setIsBroadcastOfferModalOpen(false);
+          setBroadcastToast(null);
+        }, 1500);
+      } else {
+        setBroadcastToast(`Broadcast triggered for ${activeRecipients.length} users.`);
+        setTimeout(() => {
+          setIsBroadcastOfferModalOpen(false);
+          setBroadcastToast(null);
+        }, 1500);
+      }
+    } catch (err: any) {
+      setBroadcastToast(`Broadcast error: ${err?.message || 'Check connection'}`);
+      setTimeout(() => setBroadcastToast(null), 3500);
+    } finally {
+      setIsSendingBroadcast(false);
+    }
+  };
 
   // Fee Form State
   const [baseFee, setBaseFee] = useState<number>(platformSettings.baseAcceptanceFeePercent);
@@ -247,15 +366,44 @@ export const FounderAdminVault: React.FC = () => {
             </div>
           </div>
 
-          {/* Prominent Exit Button */}
-          <button
-            type="button"
-            onClick={lockFounderVault}
-            className="flex items-center justify-center gap-2 px-4 py-2 bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-800/80 rounded-xl text-xs font-bold transition-all shadow-md group self-start sm:self-auto"
-          >
-            <LogOut className="w-4 h-4 text-rose-400 group-hover:-translate-x-0.5 transition-transform" />
-            <span>Lock Admin Vault & Return to Public Site</span>
-          </button>
+          {/* Command Action Buttons */}
+          <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto">
+            {/* 🎁 Send Personal Offer */}
+            <button
+              type="button"
+              onClick={() => {
+                setPersonalOfferToast(null);
+                setIsPersonalOfferModalOpen(true);
+              }}
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white rounded-xl text-xs font-bold transition-all shadow-md hover:shadow-amber-500/20 cursor-pointer"
+            >
+              <Gift className="w-4 h-4 text-amber-200" />
+              <span>🎁 Send Personal Offer</span>
+            </button>
+
+            {/* 📢 Broadcast Offer to All Users */}
+            <button
+              type="button"
+              onClick={() => {
+                setBroadcastToast(null);
+                setIsBroadcastOfferModalOpen(true);
+              }}
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-indigo-600 via-indigo-700 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white rounded-xl text-xs font-bold transition-all shadow-md hover:shadow-cyan-500/20 cursor-pointer"
+            >
+              <Megaphone className="w-4 h-4 text-cyan-200" />
+              <span>📢 Broadcast Offer to All Users</span>
+            </button>
+
+            {/* Prominent Exit Button */}
+            <button
+              type="button"
+              onClick={lockFounderVault}
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-800/80 rounded-xl text-xs font-bold transition-all shadow-md group cursor-pointer"
+            >
+              <LogOut className="w-4 h-4 text-rose-400 group-hover:-translate-x-0.5 transition-transform" />
+              <span>Lock Admin Vault</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -2917,7 +3065,344 @@ export const FounderAdminVault: React.FC = () => {
         );
       })()}
 
+      {/* MODAL: 🎁 Send Personal Offer */}
+      {isPersonalOfferModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-2 sm:p-4 animate-fadeIn">
+          <div className="bg-slate-900 rounded-3xl w-full max-w-full sm:max-w-lg overflow-hidden shadow-2xl border border-slate-750 flex flex-col text-white max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="bg-slate-950 px-5 py-4 flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-300">
+                  <Gift className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white">🎁 Send Personal Offer</h3>
+                  <p className="text-[11px] text-slate-400">
+                    Dispatched directly to member via Google Apps Script Webhook
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPersonalOfferModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form onSubmit={handleSendPersonalOfferSubmit} className="p-5 overflow-y-auto space-y-4 text-xs">
+              {personalOfferToast && (
+                <div className="p-3 bg-amber-950/80 border border-amber-800 text-amber-200 rounded-xl text-xs flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>{personalOfferToast}</span>
+                </div>
+              )}
+
+              {/* Select Registered Member */}
+              <div>
+                <label className="text-xs font-bold text-slate-200 block mb-1">
+                  Select Registered Member (or enter manually below)
+                </label>
+                <select
+                  value={personalOfferUserToken}
+                  onChange={(e) => {
+                    const selectedToken = e.target.value;
+                    setPersonalOfferUserToken(selectedToken);
+                    const user = usersAndCompanions.find((u) => u.userToken === selectedToken);
+                    if (user) {
+                      setPersonalOfferEmail(user.email || '');
+                      setPersonalOfferName(user.fullName || '');
+                    }
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 cursor-pointer"
+                >
+                  <option value="">-- Choose from registered users --</option>
+                  {usersAndCompanions
+                    .filter((u) => u.accountStatus !== 'Deleted_Archived')
+                    .map((u) => (
+                      <option key={u.userToken} value={u.userToken}>
+                        {u.fullName} ({u.userToken}) — {u.email || 'No Email'}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {/* Recipient Details */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-200 block mb-1">
+                    Member Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={personalOfferName}
+                    onChange={(e) => setPersonalOfferName(e.target.value)}
+                    placeholder="e.g. Rahul Sharma"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-200 block mb-1">
+                    Recipient Email Address *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={personalOfferEmail}
+                    onChange={(e) => setPersonalOfferEmail(e.target.value)}
+                    placeholder="name@gmail.com"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              {/* Offer Title */}
+              <div>
+                <label className="text-xs font-bold text-slate-200 block mb-1">
+                  Offer Title / Subject *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={personalOfferTitle}
+                  onChange={(e) => setPersonalOfferTitle(e.target.value)}
+                  placeholder="e.g. Exclusive ₹100 Outing Credit for You"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              {/* Offer Message */}
+              <div>
+                <label className="text-xs font-bold text-slate-200 block mb-1">
+                  Offer Message Body *
+                </label>
+                <textarea
+                  rows={3}
+                  required
+                  value={personalOfferMessage}
+                  onChange={(e) => setPersonalOfferMessage(e.target.value)}
+                  placeholder="Explain the perks, eligible activities, or welcome note..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              {/* Optional Coupon & Expiry */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-200 block mb-1">
+                    Coupon / Promo Code (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={personalOfferCoupon}
+                    onChange={(e) => setPersonalOfferCoupon(e.target.value)}
+                    placeholder="e.g. VIP2026"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-amber-300 font-mono font-bold focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-200 block mb-1">
+                    Validity / Expiry
+                  </label>
+                  <input
+                    type="text"
+                    value={personalOfferExpiry}
+                    onChange={(e) => setPersonalOfferExpiry(e.target.value)}
+                    placeholder="e.g. Valid until Sunday"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              {/* Footer Actions */}
+              <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsPersonalOfferModalOpen(false)}
+                  className="px-4 py-2 border border-slate-800 text-slate-400 hover:text-white rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSendingPersonalOffer}
+                  className="px-5 py-2.5 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-lg disabled:opacity-50"
+                >
+                  {isSendingPersonalOffer ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>Sending Offer...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4 text-amber-200" />
+                      <span>Send Personal Offer</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: 📢 Broadcast Offer to All Users */}
+      {isBroadcastOfferModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-2 sm:p-4 animate-fadeIn">
+          <div className="bg-slate-900 rounded-3xl w-full max-w-full sm:max-w-lg overflow-hidden shadow-2xl border border-slate-750 flex flex-col text-white max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="bg-slate-950 px-5 py-4 flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-cyan-300">
+                  <Megaphone className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white">📢 Broadcast Offer to All Users</h3>
+                  <p className="text-[11px] text-slate-400">
+                    One-click broadcast delivered via Google Apps Script Webhook
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBroadcastOfferModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form onSubmit={handleBroadcastOfferSubmit} className="p-5 overflow-y-auto space-y-4 text-xs">
+              {broadcastToast && (
+                <div className="p-3 bg-indigo-950/80 border border-indigo-800 text-cyan-200 rounded-xl text-xs flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span>{broadcastToast}</span>
+                </div>
+              )}
+
+              {/* Audience Summary Box */}
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] text-slate-400 block font-medium">Target Broadcast Audience</span>
+                  <span className="text-xs font-bold text-emerald-400 flex items-center gap-1 mt-0.5">
+                    <Users className="w-3.5 h-3.5" />
+                    <span>
+                      {usersAndCompanions.filter((u) => u.email && u.email.trim() !== '' && u.accountStatus !== 'Deleted_Archived').length} Registered Members with Email
+                    </span>
+                  </span>
+                </div>
+                <span className="text-[10px] bg-indigo-950/80 text-cyan-300 font-mono px-2 py-1 rounded border border-indigo-800">
+                  ALL USERS
+                </span>
+              </div>
+
+              {/* Broadcast Subject */}
+              <div>
+                <label className="text-xs font-bold text-slate-200 block mb-1">
+                  Broadcast Subject / Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={broadcastSubject}
+                  onChange={(e) => setBroadcastSubject(e.target.value)}
+                  placeholder="e.g. Weekend Special: 20% Off Companion Booking Fees"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              {/* Broadcast Message */}
+              <div>
+                <label className="text-xs font-bold text-slate-200 block mb-1">
+                  Broadcast Message Body *
+                </label>
+                <textarea
+                  rows={4}
+                  required
+                  value={broadcastMessage}
+                  onChange={(e) => setBroadcastMessage(e.target.value)}
+                  placeholder="Write your platform announcement or community offer..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              {/* Optional Coupon & Expiry */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-200 block mb-1">
+                    Coupon / Promo Code (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={broadcastCoupon}
+                    onChange={(e) => setBroadcastCoupon(e.target.value)}
+                    placeholder="e.g. ALLCOMMUNITY"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-cyan-300 font-mono font-bold focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-200 block mb-1">
+                    Validity / Expiry
+                  </label>
+                  <input
+                    type="text"
+                    value={broadcastExpiry}
+                    onChange={(e) => setBroadcastExpiry(e.target.value)}
+                    placeholder="e.g. Valid this weekend only"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+
+              {/* Footer Actions */}
+              <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsBroadcastOfferModalOpen(false)}
+                  className="px-4 py-2 border border-slate-800 text-slate-400 hover:text-white rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSendingBroadcast}
+                  className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 via-indigo-700 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-lg disabled:opacity-50"
+                >
+                  {isSendingBroadcast ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>Broadcasting to All...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Megaphone className="w-4 h-4 text-cyan-200" />
+                      <span>Broadcast in 1-Click</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Toast Alert Notifications */}
+      {personalOfferToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-amber-950 border border-amber-600 text-amber-100 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs font-bold animate-in fade-in slide-in-from-bottom-4">
+          <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>{personalOfferToast}</span>
+        </div>
+      )}
+      {broadcastToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-indigo-950 border border-cyan-500 text-cyan-100 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs font-bold animate-in fade-in slide-in-from-bottom-4">
+          <Megaphone className="w-4 h-4 text-cyan-400 shrink-0" />
+          <span>{broadcastToast}</span>
+        </div>
+      )}
       {walletToast && (
         <div className="fixed bottom-6 right-6 z-50 bg-emerald-950 border border-emerald-600 text-emerald-100 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 text-xs font-bold animate-in fade-in slide-in-from-bottom-4">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />

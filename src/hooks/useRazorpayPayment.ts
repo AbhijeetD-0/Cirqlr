@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 
-export const RAZORPAY_TEST_KEY = 'rzp_test_TocfHGrhQ7kJay';
+// Read Razorpay API Key exclusively from environment variable (never hardcoded in code)
+export const getRazorpayKey = (): string => {
+  return (import.meta.env.VITE_RAZORPAY_KEY_ID || '').trim();
+};
 
 export interface RazorpayPrefill {
   name?: string;
@@ -94,10 +97,19 @@ export const useRazorpayPayment = () => {
       : '';
 
     // Amount in paise (1 INR = 100 paise)
-    const amountInPaise = Math.round(options.amount * 100);
+    const activeKey = getRazorpayKey();
+    if (!activeKey) {
+      setIsProcessing(false);
+      const errorMsg = 'Razorpay Key ID is not configured. Please set VITE_RAZORPAY_KEY_ID in your environment variables.';
+      console.warn('[Razorpay]', errorMsg);
+      if (options.onError) {
+        options.onError(new Error(errorMsg));
+      }
+      return;
+    }
 
     const checkoutConfig = {
-      key: RAZORPAY_TEST_KEY,
+      key: activeKey,
       amount: amountInPaise,
       currency: options.currency || 'INR',
       name: options.name || 'Cirqlr by SUDARSAN HUB',

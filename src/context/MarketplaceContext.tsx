@@ -20,7 +20,10 @@ import {
   RescheduleHistoryEntry,
   WalletTransactionEntry,
 } from '../types/marketplace';
+import { collection, doc, setDoc, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { sendBookingStatusEmail } from '../services/emailWebhookService';
+import { sendCancellationEmail } from '../services/cancellationAndOffersService';
 import { checkVenueSafety } from '../services/safetyFilterService';
 import { getTimeUntilOutingHours, getCurrentCalendarMonth } from '../utils/dateUtils';
 import {
@@ -252,193 +255,8 @@ interface MarketplaceContextType {
   liftUserSuspension: (userToken: string) => void;
 }
 
-const INITIAL_SEED_USERS: UserProfile[] = [
-  {
-    userToken: 'USR-WB-1001',
-    fullName: 'Priya Sengupta',
-    age: 24,
-    gender: 'Female',
-    city: 'Kolkata',
-    state: 'West Bengal',
-    serviceAreas: ['Park Street, South Kolkata & Salt Lake Commercial Hubs'],
-    bio: 'Literature postgraduate and heritage enthusiast. Happy to accompany book lovers, cafe explorers, and cultural gallery visitors in public settings.',
-    languages: ['Bengali', 'English', 'Hindi'],
-    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80',
-    phoneNumber: '+91 98300 12345',
-    email: 'priya.sen@gmail.com',
-    password: 'Cirqlr@2026',
-    residentialAddress: 'Flat 4B, Heritage Court, 14 Park Street, Kolkata, West Bengal 700016',
-    documentType: 'Voter ID Card',
-    documentIdNumber: 'WB/01/023/104921',
-    documentImageUrl: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=600&q=80',
-    idDocumentUrl: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=600&q=80',
-    idSubmittedAt: '2026-01-15T10:00:00Z',
-    verificationHistory: [
-      {
-        id: 'ID-REC-1001',
-        documentType: 'Voter ID Card',
-        idNumber: 'WB/01/023/104921',
-        documentImageUrl: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=600&q=80',
-        residentialAddress: 'Flat 4B, Heritage Court, 14 Park Street, Kolkata, West Bengal 700016',
-        submittedAt: '2026-01-15T10:00:00Z',
-        status: 'Verified',
-      },
-    ],
-    verificationStatus: 'Verified',
-    isVerified: true,
-    hourlyRate: 350,
-    outingCategories: ['Verified Cafe & Restaurant', 'Museum / Art Gallery'],
-    rating: 4.9,
-    reviewCount: 8,
-    completedOutingsCount: 12,
-    accountStatus: 'Active',
-    isCompanionAvailable: true,
-    joinedDate: '2026-01-15',
-    interests: ['Books & Literature', 'Specialty Tea & Coffee', 'Art Galleries'],
-    isProCompanion: true,
-    isPremiumCompanion: true,
-    subscriptionPlan: 'Companion Pro (1-Month Pass)',
-    subscriptionStatus: 'active',
-    publicGallery: [
-      'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=600&q=80',
-    ],
-  },
-  {
-    userToken: 'USR-OD-2002',
-    fullName: 'Ananya Pattnaik',
-    age: 25,
-    gender: 'Female',
-    city: 'Bhubaneswar',
-    state: 'Odisha',
-    serviceAreas: ['Saheed Nagar, Patia & Ekamra Kshetra'],
-    bio: 'Art and architecture researcher. Companion for museum tours, artisanal handicraft shopping, and cafe meetings.',
-    languages: ['Odia', 'English', 'Hindi'],
-    avatarUrl: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=400&q=80',
-    phoneNumber: '+91 94370 12345',
-    email: 'ananya.pattnaik@gmail.com',
-    password: 'Cirqlr@2026',
-    residentialAddress: 'Plot 42, Infocity Road, Patia, Bhubaneswar, Odisha 751024',
-    documentType: 'Driving License',
-    documentIdNumber: 'OD-02-2022-0049211',
-    documentImageUrl: 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&w=600&q=80',
-    idDocumentUrl: 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&w=600&q=80',
-    idSubmittedAt: '2026-02-01T11:30:00Z',
-    verificationHistory: [
-      {
-        id: 'ID-REC-2002',
-        documentType: 'Driving License',
-        idNumber: 'OD-02-2022-0049211',
-        documentImageUrl: 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&w=600&q=80',
-        residentialAddress: 'Plot 42, Infocity Road, Patia, Bhubaneswar, Odisha 751024',
-        submittedAt: '2026-02-01T11:30:00Z',
-        status: 'Verified',
-      },
-    ],
-    verificationStatus: 'Verified',
-    isVerified: true,
-    hourlyRate: 400,
-    outingCategories: ['Museum / Art Gallery', 'Verified Cafe & Restaurant'],
-    rating: 5.0,
-    reviewCount: 6,
-    completedOutingsCount: 9,
-    accountStatus: 'Active',
-    isCompanionAvailable: true,
-    joinedDate: '2026-02-01',
-    interests: ['Odisha Crafts', 'Museums', 'Public Film Festivals'],
-    isProCompanion: false,
-    subscriptionPlan: 'Free Tier',
-    subscriptionStatus: 'none',
-    publicGallery: [
-      'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=600&q=80',
-    ],
-  },
-  {
-    userToken: 'USR-WB-3003',
-    fullName: 'Sourav Mukherjee',
-    age: 27,
-    gender: 'Male',
-    city: 'Kolkata',
-    state: 'West Bengal',
-    serviceAreas: ['New Town, Salt Lake & Victoria Memorial Area'],
-    bio: 'Cinema and indie music lover. Great companion for multiplex movie outings, live music cafes, and tech summits.',
-    languages: ['Bengali', 'English', 'Hindi'],
-    avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&q=80',
-    phoneNumber: '+91 98310 98765',
-    email: 'sourav.mukherjee@gmail.com',
-    password: 'Cirqlr@2026',
-    residentialAddress: 'Block CF-32, Sector 1, Salt Lake City, Kolkata, West Bengal 700064',
-    documentType: 'PAN Card',
-    documentIdNumber: 'BKZPM4910K',
-    documentImageUrl: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=600&q=80',
-    idDocumentUrl: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=600&q=80',
-    idSubmittedAt: '2026-02-10T14:15:00Z',
-    verificationHistory: [
-      {
-        id: 'ID-REC-3003',
-        documentType: 'PAN Card',
-        idNumber: 'BKZPM4910K',
-        documentImageUrl: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=600&q=80',
-        residentialAddress: 'Block CF-32, Sector 1, Salt Lake City, Kolkata, West Bengal 700064',
-        submittedAt: '2026-02-10T14:15:00Z',
-        status: 'Verified',
-      },
-    ],
-    verificationStatus: 'Verified',
-    isVerified: true,
-    hourlyRate: 300,
-    outingCategories: ['Cinema / INOX / PVR Theater', 'Verified Cafe & Restaurant'],
-    rating: 4.8,
-    reviewCount: 5,
-    completedOutingsCount: 7,
-    accountStatus: 'Active',
-    isCompanionAvailable: true,
-    joinedDate: '2026-02-10',
-    interests: ['Cinema', 'Live Music', 'Board Games'],
-    isProCompanion: false,
-    subscriptionPlan: 'Free Tier',
-    subscriptionStatus: 'none',
-    publicGallery: [
-      'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=600&q=80',
-      'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&w=600&q=80',
-    ],
-  },
-];
-
-const INITIAL_SEED_CARDS: ActivityPackageCard[] = [
-  {
-    id: 'CARD-WB-101',
-    companionToken: 'USR-WB-1001',
-    title: 'Park Street Heritage Cafe & Bookstore Tour',
-    venueCategory: 'Verified Cafe & Restaurant',
-    shortDescription: 'Relaxed literary discussion over specialty tea and artisanal coffee in verified iconic Kolkata cafes.',
-    city: 'Kolkata',
-    hourlyRate: 350,
-    createdAt: '2026-01-16',
-  },
-  {
-    id: 'CARD-OD-201',
-    companionToken: 'USR-OD-2002',
-    title: 'Kala Bhoomi Crafts Museum & Cafe Conversation',
-    venueCategory: 'Museum / Art Gallery',
-    shortDescription: 'Thoughtful guided public tour of traditional Odisha arts followed by artisan coffee.',
-    city: 'Bhubaneswar',
-    hourlyRate: 400,
-    createdAt: '2026-02-02',
-  },
-  {
-    id: 'CARD-WB-301',
-    companionToken: 'USR-WB-3003',
-    title: 'Multiplex Cinema & Food Court Discussion',
-    venueCategory: 'Cinema / INOX / PVR Theater',
-    shortDescription: 'Catch the latest weekend film at South City or Quest Mall with engaging post-movie critique.',
-    city: 'Kolkata',
-    hourlyRate: 300,
-    createdAt: '2026-02-11',
-  },
-];
+const INITIAL_SEED_USERS: UserProfile[] = [];
+const INITIAL_SEED_CARDS: ActivityPackageCard[] = [];
 
 const MarketplaceContext = createContext<MarketplaceContextType | undefined>(undefined);
 
@@ -544,11 +362,14 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const rawBookings: BookingRecord[] = savedBookings ? JSON.parse(savedBookings) : [];
 
       const savedUsers = safeGetItem('sangha_v4_users') || safeGetItem('vibego_v1_users');
-      let rawUsers: UserProfile[] = INITIAL_SEED_USERS;
+      let rawUsers: UserProfile[] = [];
+      const DUMMY_SEED_TOKENS = ['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'];
       if (savedUsers) {
         const parsed = JSON.parse(savedUsers);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          rawUsers = parsed.map(sanitizeUserVerification);
+          rawUsers = parsed
+            .filter((u) => u && !DUMMY_SEED_TOKENS.includes(u.userToken))
+            .map(sanitizeUserVerification);
         }
       }
 
@@ -619,7 +440,13 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const saved = localStorage.getItem('sangha_v4_cards');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const DUMMY_SEED_TOKENS = ['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'];
+          const DUMMY_SEED_CARD_IDS = ['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301'];
+          return parsed.filter(
+            (c) => c && !DUMMY_SEED_CARD_IDS.includes(c.id) && !DUMMY_SEED_TOKENS.includes(c.companionToken)
+          );
+        }
       }
       return INITIAL_SEED_CARDS;
     } catch {
@@ -691,7 +518,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (savedUsers) {
         const parsed = JSON.parse(savedUsers);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          rawUsers = parsed.map(sanitizeUserVerification);
+          rawUsers = parsed
+            .filter((u) => u && !['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'].includes(u.userToken))
+            .map(sanitizeUserVerification);
         }
       }
 
@@ -721,6 +550,182 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       console.warn('[Fee Recalculation & State Migration Handled]', err);
     }
   }, [platformSettings?.baseAcceptanceFeePercent, platformSettings?.repeatFeeReductionPercent]);
+
+  // Real-time Production Firestore Listeners for users, bookings, activityCards, and transactions
+  useEffect(() => {
+    if (!db) return;
+
+    // 1. Real-time Users & Companions Listener
+    const unsubUsers = onSnapshot(
+      collection(db, 'users'),
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteUsers: UserProfile[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as UserProfile;
+            if (data && data.userToken && !['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'].includes(data.userToken)) {
+              remoteUsers.push(sanitizeUserVerification(data));
+            }
+          });
+          if (remoteUsers.length > 0) {
+            setUsersAndCompanions(remoteUsers);
+            safeSetItem('sangha_v4_users', JSON.stringify(remoteUsers));
+            if (currentUser) {
+              const matched = remoteUsers.find((u) => u.userToken === currentUser.userToken);
+              if (matched) {
+                setCurrentUser(matched);
+                safeSetItem('sangha_v4_current_user', JSON.stringify(matched));
+              }
+            }
+          }
+        }
+      },
+      (error) => {
+        console.warn('[Firestore] users snapshot sync note:', error.message);
+      }
+    );
+
+    // 2. Real-time Bookings Listener
+    const unsubBookings = onSnapshot(
+      collection(db, 'bookings'),
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteBookings: BookingRecord[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as BookingRecord;
+            if (data && data.id) {
+              remoteBookings.push(data);
+            }
+          });
+          setBookings(remoteBookings);
+          safeSetItem('sangha_v4_bookings', JSON.stringify(remoteBookings));
+        }
+      },
+      (error) => {
+        console.warn('[Firestore] bookings snapshot sync note:', error.message);
+      }
+    );
+
+    // 3. Real-time Activity Cards Listener
+    const unsubCards = onSnapshot(
+      collection(db, 'activityCards'),
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteCards: ActivityPackageCard[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as ActivityPackageCard;
+            if (data && data.id && !['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301'].includes(data.id)) {
+              remoteCards.push(data);
+            }
+          });
+          setActivityCards(remoteCards);
+          try {
+            localStorage.setItem('sangha_v4_cards', JSON.stringify(remoteCards));
+          } catch {
+            // ignore
+          }
+        }
+      },
+      (error) => {
+        console.warn('[Firestore] activityCards snapshot sync note:', error.message);
+      }
+    );
+
+    // 4. Real-time Transactions / Payments Ledger Listener
+    const unsubTransactions = onSnapshot(
+      collection(db, 'transactions'),
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteLedger: PaymentLedgerEntry[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as PaymentLedgerEntry;
+            if (data && data.id) {
+              remoteLedger.push(data);
+            }
+          });
+          setPaymentsLedger(remoteLedger);
+          try {
+            localStorage.setItem('sangha_v4_payments', JSON.stringify(remoteLedger));
+          } catch {
+            // ignore
+          }
+        }
+      },
+      (error) => {
+        console.warn('[Firestore] transactions snapshot sync note:', error.message);
+      }
+    );
+
+    return () => {
+      unsubUsers();
+      unsubBookings();
+      unsubCards();
+      unsubTransactions();
+    };
+  }, []);
+
+  // Production Firestore Async Persistence Helpers
+  const syncUserToFirestore = async (user: UserProfile) => {
+    try {
+      if (db && user.userToken) {
+        await setDoc(doc(db, 'users', user.userToken), user, { merge: true });
+        // Also persist wallet document
+        await setDoc(
+          doc(db, 'wallets', user.userToken),
+          {
+            userToken: user.userToken,
+            userName: user.fullName,
+            cancellationCreditBalance: user.cancellationCreditBalance || 0,
+            walletHistory: user.walletHistory || [],
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+      }
+    } catch (err: any) {
+      console.warn('[Firestore Sync] User write note:', err?.message);
+    }
+  };
+
+  const syncBookingToFirestore = async (booking: BookingRecord) => {
+    try {
+      if (db && booking.id) {
+        await setDoc(doc(db, 'bookings', booking.id), booking, { merge: true });
+      }
+    } catch (err: any) {
+      console.warn('[Firestore Sync] Booking write note:', err?.message);
+    }
+  };
+
+  const syncCardToFirestore = async (card: ActivityPackageCard) => {
+    try {
+      if (db && card.id) {
+        await setDoc(doc(db, 'activityCards', card.id), card, { merge: true });
+      }
+    } catch (err: any) {
+      console.warn('[Firestore Sync] Activity card write note:', err?.message);
+    }
+  };
+
+  const deleteCardFromFirestore = async (cardId: string) => {
+    try {
+      if (db && cardId) {
+        await deleteDoc(doc(db, 'activityCards', cardId));
+      }
+    } catch (err: any) {
+      console.warn('[Firestore Sync] Card delete note:', err?.message);
+    }
+  };
+
+  const syncTransactionToFirestore = async (txn: PaymentLedgerEntry) => {
+    try {
+      if (db && txn.id) {
+        await setDoc(doc(db, 'transactions', txn.id), txn, { merge: true });
+      }
+    } catch (err: any) {
+      console.warn('[Firestore Sync] Transaction write note:', err?.message);
+    }
+  };
 
   // Modals
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
@@ -1412,6 +1417,8 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setUsersAndCompanions((prev) => [newUser, ...prev]);
     setCurrentUser(newUser);
 
+    syncUserToFirestore(newUser);
+
     addAuditLog(
       'New User Registered',
       `Registered account ${userToken} (${input.fullName}, ${input.gender}, ${input.city}). Address verification: ${input.documentType ? `[${input.documentType}: ${input.documentIdNumber}]` : '[Pending Upload]'}.${referredByUser ? ` Referred by ${referredByUser.fullName} (${cleanRefInput}).` : ''}`
@@ -1475,6 +1482,16 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       )
     );
 
+    // Sync to Firestore
+    syncUserToFirestore({
+      ...currentUser,
+      accountStatus: 'Deleted_Archived',
+      deletedAt: now,
+      purgeAfter: purgeTimestamp,
+      deletionReason: reason || 'User requested account deletion and withdrawal of consent under DPDP Act 2023',
+      isCompanionAvailable: false,
+    });
+
     addAuditLog(
       'Account Deleted & Consent Withdrawn',
       `User ${currentUser.userToken} (${currentUser.fullName}) requested account deletion. Public profile and cards hidden immediately; account placed on 1-year statutory hold until ${new Date(purgeTimestamp).toLocaleDateString()}.`
@@ -1494,6 +1511,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const permanentlyPurgeArchivedUser = (userToken: string) => {
     setUsersAndCompanions((prev) => prev.filter((u) => u.userToken !== userToken));
     setActivityCards((prev) => prev.filter((c) => c.companionToken !== userToken));
+    if (db) {
+      deleteDoc(doc(db, 'users', userToken)).catch(console.warn);
+      deleteDoc(doc(db, 'wallets', userToken)).catch(console.warn);
+    }
     addAuditLog(
       'Permanent Account Purge',
       `User ${userToken} permanently purged from all database records following statutory legal holding period.`
@@ -1573,12 +1594,22 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const updateUserAccountStatus = (userToken: string, status: AccountStatus, note?: string) => {
+    let targetUser: UserProfile | undefined;
     if (currentUser?.userToken === userToken) {
       setCurrentUser((prev) => (prev ? { ...prev, accountStatus: status } : null));
     }
     setUsersAndCompanions((prev) =>
-      prev.map((u) => (u.userToken === userToken ? { ...u, accountStatus: status } : u))
+      prev.map((u) => {
+        if (u.userToken === userToken) {
+          targetUser = { ...u, accountStatus: status };
+          return targetUser;
+        }
+        return u;
+      })
     );
+    if (targetUser) {
+      syncUserToFirestore(targetUser);
+    }
     addAuditLog(
       'Account Standing Updated',
       `Account ${userToken} set to [${status}]. ${note ? `Note: ${note}` : ''}`
@@ -1587,12 +1618,22 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // Direct Verify Tick (Approve ID ✔)
   const verifyUserIdentity = (userToken: string) => {
+    let targetUser: UserProfile | undefined;
     if (currentUser?.userToken === userToken) {
       setCurrentUser((prev) => (prev ? { ...prev, verificationStatus: 'ID Verified' } : null));
     }
     setUsersAndCompanions((prev) =>
-      prev.map((u) => (u.userToken === userToken ? { ...u, verificationStatus: 'ID Verified' } : u))
+      prev.map((u) => {
+        if (u.userToken === userToken) {
+          targetUser = { ...u, verificationStatus: 'ID Verified' };
+          return targetUser;
+        }
+        return u;
+      })
     );
+    if (targetUser) {
+      syncUserToFirestore(targetUser);
+    }
     addAuditLog(
       'User ID Verified',
       `Founder approved government ID verification for ${userToken}. User is now live in public Explore!`
@@ -1660,6 +1701,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       safeSetItem('sangha_v4_users', JSON.stringify(next));
       return next;
     });
+    syncUserToFirestore(updatedUser);
     addAuditLog('User Profile Updated', `${currentUser.userToken} updated profile details.`);
   };
 
@@ -1811,6 +1853,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
 
     setActivityCards((prev) => [newCard, ...prev]);
+    syncCardToFirestore(newCard);
     addAuditLog(
       'Activity Card Created',
       `Card "${newCard.title}" created for companion ${companionToken} at ₹${newCard.hourlyRate}/hr.`
@@ -1842,12 +1885,22 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
     }
 
-    setActivityCards((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates } : c)));
+    setActivityCards((prev) =>
+      prev.map((c) => {
+        if (c.id === id) {
+          const updated = { ...c, ...updates };
+          syncCardToFirestore(updated);
+          return updated;
+        }
+        return c;
+      })
+    );
     addAuditLog('Activity Card Modified', `Card ID ${id} parameters updated.`);
   };
 
   const deleteActivityCard = (id: string) => {
     setActivityCards((prev) => prev.filter((c) => c.id !== id));
+    deleteCardFromFirestore(id);
     addAuditLog('Activity Card Removed', `Card ID ${id} was deleted by owner.`);
   };
 
@@ -1986,6 +2039,8 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     setBookings((prev) => [newBooking, ...prev]);
 
+    syncBookingToFirestore(newBooking);
+
     addAuditLog(
       'Outing Request Created',
       `Booking ${newBooking.bookingToken} initiated: ${currentUser.fullName} -> ${newBooking.companionName} (${newBooking.activityTitle} at ${newBooking.venueName}). Discount applied: [${feeResult.discountApplied}]. Effective Fee: ${feeResult.effectiveFeePercent}%.`
@@ -2023,6 +2078,28 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       amount: booking.totalOutingCost,
       status: 'REJECTED',
       bookingId: booking.bookingToken || booking.id,
+    });
+
+    sendCancellationEmail({
+      type: 'companion_cancelled',
+      bookingToken: booking.bookingToken || booking.id,
+      bookerName: booking.bookerName,
+      bookerEmail: toEmail,
+      companionName: booking.companionName,
+      companionEmail: booking.companionEmail || getUserByToken(booking.companionToken)?.email,
+      activityTitle: booking.activityTitle,
+      venueName: booking.venueName,
+      venueAddress: booking.venueAddress,
+      outingDate: booking.outingDate,
+      outingTime: booking.outingTime,
+      amount: booking.totalOutingCost,
+      reason: 'Declined by Companion',
+      refundDetails: 'Outing request was declined by the companion.',
+    });
+
+    syncBookingToFirestore({
+      ...booking,
+      status: 'Rejected by Companion',
     });
   };
 
@@ -2481,6 +2558,41 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       'Booking Cancelled by Booker (Companion Auto-Credited)',
       `Booking ${booking.bookingToken} cancelled by ${booking.bookerName}. 100% Platform Fee of ₹${feeToCredit} credited to Companion ${booking.companionName} (${companionToken}) Fee Wallet. Zero lifeline deducted.`
     );
+
+    // 7. Sync to Firestore
+    syncBookingToFirestore({
+      ...booking,
+      status: newStatus as any,
+      cancellationReason: reason,
+      cancelledAt: cancelledTimestamp,
+      cancelledByRole: 'Booker',
+      cancelledByToken: currentUser?.userToken || booking.bookerToken,
+      cancellationFeeRefundedAmount: feeToCredit,
+    });
+    if (companion) {
+      syncUserToFirestore({
+        ...companion,
+        cancellationCreditBalance: (companion.cancellationCreditBalance || 0) + feeToCredit,
+      });
+    }
+
+    // 8. Automatic Cancellation Email notification to Companion
+    sendCancellationEmail({
+      type: 'booker_cancelled',
+      bookingToken: booking.bookingToken || booking.id,
+      bookerName: booking.bookerName,
+      bookerEmail: booking.bookerEmail || currentUser?.email,
+      companionName: booking.companionName,
+      companionEmail: booking.companionEmail || companion?.email,
+      activityTitle: booking.activityTitle,
+      venueName: booking.venueName,
+      venueAddress: booking.venueAddress,
+      outingDate: booking.outingDate,
+      outingTime: booking.outingTime,
+      amount: booking.totalOutingCost,
+      reason,
+      walletCreditDetails: `₹${feeToCredit} Platform Fee automatically credited to your fee wallet.`,
+    });
   };
 
   // CASE B — CANCELLED BY COMPANION (3-Hour Notice & 1 Monthly Emergency Lifeline Parameter)
@@ -2617,6 +2729,37 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         `Companion ${booking.companionName} (${booking.companionToken}) cancelled booking ${booking.bookingToken} using 1/1 Monthly Emergency Lifeline (>3 hrs notice). ₹${feeToCredit} credited to wallet.`
       );
 
+      // Sync to Firestore
+      syncBookingToFirestore({
+        ...booking,
+        status: newStatus as any,
+        cancellationReason: reason,
+        cancelledAt: cancelledTimestamp,
+        cancelledByRole: 'Companion',
+        cancelledByToken: booking.companionToken,
+        cancellationFeeRefundedAmount: feeToCredit,
+        emergencyLifelineUsed: true,
+      });
+
+      // Automatic Cancellation Email notification to Booker
+      const bookerUser = getUserByToken(booking.bookerToken);
+      sendCancellationEmail({
+        type: 'companion_cancelled',
+        bookingToken: booking.bookingToken || booking.id,
+        bookerName: booking.bookerName,
+        bookerEmail: booking.bookerEmail || bookerUser?.email,
+        companionName: booking.companionName,
+        companionEmail: booking.companionEmail || companionUser?.email,
+        activityTitle: booking.activityTitle,
+        venueName: booking.venueName,
+        venueAddress: booking.venueAddress,
+        outingDate: booking.outingDate,
+        outingTime: booking.outingTime,
+        amount: booking.totalOutingCost,
+        reason,
+        refundDetails: 'Outing cancelled by companion. Zero obligation; pay-in-person fee is void.',
+      });
+
       return { eligibleForCredit: true, creditedAmount: feeToCredit };
     } else {
       // Non-refundable fee forfeiture
@@ -2659,6 +2802,36 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         'Non-Refundable Companion Cancellation (Fee Forfeited)',
         `Companion ${booking.companionName} (${booking.companionToken}) cancelled booking ${booking.bookingToken}. Acceptance fee of ₹${feeToCredit} forfeited (Less than 3 hrs notice or lifeline exhausted).`
       );
+
+      // Sync to Firestore
+      syncBookingToFirestore({
+        ...booking,
+        status: newStatus as any,
+        cancellationReason: reason,
+        cancelledAt: cancelledTimestamp,
+        cancelledByRole: 'Companion',
+        cancelledByToken: booking.companionToken,
+        cancellationFeeForfeited: true,
+      });
+
+      // Automatic Cancellation Email notification to Booker
+      const bookerUser = getUserByToken(booking.bookerToken);
+      sendCancellationEmail({
+        type: 'companion_cancelled',
+        bookingToken: booking.bookingToken || booking.id,
+        bookerName: booking.bookerName,
+        bookerEmail: booking.bookerEmail || bookerUser?.email,
+        companionName: booking.companionName,
+        companionEmail: booking.companionEmail || companionUser?.email,
+        activityTitle: booking.activityTitle,
+        venueName: booking.venueName,
+        venueAddress: booking.venueAddress,
+        outingDate: booking.outingDate,
+        outingTime: booking.outingTime,
+        amount: booking.totalOutingCost,
+        reason,
+        refundDetails: 'Outing cancelled by companion. Zero obligation; pay-in-person fee is void.',
+      });
 
       return { eligibleForCredit: false, creditedAmount: 0 };
     }
@@ -2914,6 +3087,24 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       'Acceptance Fee Paid & Outing Confirmed',
       `Payment ${razorpayRefId} (₹${booking.acceptanceFee} total, ₹${creditUsed} credit applied) confirmed for booking ${booking.bookingToken}. Outing is Confirmed and chat channel unlocked immediately.`
     );
+
+    syncTransactionToFirestore(newLedgerEntry);
+    syncBookingToFirestore({
+      ...booking,
+      status: 'Confirmed' as const,
+      razorpayRefId: canonicalPaymentId,
+      paymentReferenceId: canonicalPaymentId,
+      acceptanceFee: bookingAcceptanceFee,
+      feePercentSnapshot: liveFee.effectiveFeePercent,
+      paidPlatformFeeAmount: bookingAcceptanceFee,
+      creditUsedForAcceptance: creditUsed,
+      referralCreditConsumed: true,
+      referralCreditUsed: booking.discountApplied === 'Referral Credit (5%)',
+    });
+    const updatedCompanionUser = getUserByToken(booking.companionToken);
+    if (updatedCompanionUser) {
+      syncUserToFirestore(updatedCompanionUser);
+    }
 
     // Trigger Google Apps Script email webhook to deliver 100% Confirmed HTML email to Booker's Gmail
     const bookerUser = getUserByToken(booking.bookerToken);

@@ -19,13 +19,46 @@ const REDUNDANT_KEYS = [
   'sangha_v1_users',
 ];
 
+export const DUMMY_SEED_TOKENS = ['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'];
+export const DUMMY_SEED_CARD_IDS = ['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301'];
+
 /**
- * Removes legacy and duplicate cache keys to reclaim browser storage.
+ * Removes legacy and duplicate cache keys, and purges hardcoded dummy sample profiles to reclaim browser storage.
  */
 export function cleanupLegacyStorage(): void {
   try {
     for (const key of REDUNDANT_KEYS) {
       localStorage.removeItem(key);
+    }
+
+    // Purge dummy sample profiles from existing storage
+    const rawUsers = localStorage.getItem('sangha_v4_users');
+    if (rawUsers) {
+      try {
+        const users = JSON.parse(rawUsers);
+        if (Array.isArray(users)) {
+          const filtered = users.filter((u: any) => !DUMMY_SEED_TOKENS.includes(u.userToken));
+          localStorage.setItem('sangha_v4_users', JSON.stringify(filtered));
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Purge dummy activity cards
+    const rawCards = localStorage.getItem('sangha_v4_cards');
+    if (rawCards) {
+      try {
+        const cards = JSON.parse(rawCards);
+        if (Array.isArray(cards)) {
+          const filteredCards = cards.filter(
+            (c: any) => !DUMMY_SEED_CARD_IDS.includes(c.id) && !DUMMY_SEED_TOKENS.includes(c.companionToken)
+          );
+          localStorage.setItem('sangha_v4_cards', JSON.stringify(filteredCards));
+        }
+      } catch {
+        // ignore
+      }
     }
   } catch {
     // Ignore storage access errors
