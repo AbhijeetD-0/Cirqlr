@@ -35,6 +35,7 @@ export const BookerView: React.FC = () => {
     platformSettings, 
     currentUser,
     getCompanionActivityCards,
+    activityCards,
     openAuthModal,
     setActiveTab,
     openSuspensionNotice
@@ -128,7 +129,8 @@ export const BookerView: React.FC = () => {
     selectedCity, 
     selectedCategory, 
     searchQuery, 
-    getCompanionActivityCards
+    getCompanionActivityCards,
+    activityCards
   ]);
 
   const handleRequestOuting = (companion: UserProfile, cardId?: string) => {

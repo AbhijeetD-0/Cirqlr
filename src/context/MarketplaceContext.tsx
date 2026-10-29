@@ -563,25 +563,42 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const unsubUsers = onSnapshot(
       collection(db, 'users'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteUsers: UserProfile[] = [];
-          snapshot.forEach((docSnap) => {
-            const data = docSnap.data() as UserProfile;
-            if (data && data.userToken && !['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'].includes(data.userToken)) {
-              remoteUsers.push(sanitizeUserVerification(data));
+        const remoteUsers: UserProfile[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as UserProfile;
+          const userToken = data.userToken || docSnap.id;
+          if (userToken && !['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'].includes(userToken)) {
+            remoteUsers.push(sanitizeUserVerification({ ...data, userToken }));
+          }
+        });
+
+        // Set remote users and auto-sync any local user on this phone not yet in Firestore
+        setUsersAndCompanions((prevLocal) => {
+          const remoteTokenMap = new Map<string, UserProfile>();
+          remoteUsers.forEach((u) => remoteTokenMap.set(u.userToken, u));
+
+          const merged = [...remoteUsers];
+          prevLocal.forEach((localUser) => {
+            if (
+              localUser?.userToken &&
+              !remoteTokenMap.has(localUser.userToken) &&
+              !['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'].includes(localUser.userToken)
+            ) {
+              syncUserToFirestore(localUser);
+              merged.push(localUser);
             }
           });
-          if (remoteUsers.length > 0) {
-            setUsersAndCompanions(remoteUsers);
-            safeSetItem('sangha_v4_users', JSON.stringify(remoteUsers));
-            const activeToken = safeGetItem('cirqlr_active_user_token');
-            if (activeToken) {
-              const matched = remoteUsers.find((u) => u.userToken === activeToken);
-              if (matched) {
-                setCurrentUser(matched);
-                safeSetItem('sangha_v4_current_user', JSON.stringify(matched));
-              }
-            }
+
+          safeSetItem('sangha_v4_users', JSON.stringify(merged));
+          return merged;
+        });
+
+        const activeToken = safeGetItem('cirqlr_active_user_token');
+        if (activeToken) {
+          const matched = remoteUsers.find((u) => u.userToken === activeToken);
+          if (matched) {
+            setCurrentUser(matched);
+            safeSetItem('sangha_v4_current_user', JSON.stringify(matched));
           }
         }
       },
@@ -594,17 +611,30 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const unsubBookings = onSnapshot(
       collection(db, 'bookings'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteBookings: BookingRecord[] = [];
-          snapshot.forEach((docSnap) => {
-            const data = docSnap.data() as BookingRecord;
-            if (data && data.id) {
-              remoteBookings.push(data);
+        const remoteBookings: BookingRecord[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as BookingRecord;
+          const bookingId = data.id || docSnap.id;
+          if (bookingId) {
+            remoteBookings.push({ ...data, id: bookingId });
+          }
+        });
+
+        setBookings((prevLocal) => {
+          const remoteBookingMap = new Map<string, BookingRecord>();
+          remoteBookings.forEach((b) => remoteBookingMap.set(b.id, b));
+
+          const merged = [...remoteBookings];
+          prevLocal.forEach((localBooking) => {
+            if (localBooking?.id && !remoteBookingMap.has(localBooking.id)) {
+              syncBookingToFirestore(localBooking);
+              merged.push(localBooking);
             }
           });
-          setBookings(remoteBookings);
-          safeSetItem('sangha_v4_bookings', JSON.stringify(remoteBookings));
-        }
+
+          safeSetItem('sangha_v4_bookings', JSON.stringify(merged));
+          return merged;
+        });
       },
       (error) => {
         console.warn('[Firestore] bookings snapshot sync note:', error.message);
@@ -615,21 +645,38 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const unsubCards = onSnapshot(
       collection(db, 'activityCards'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteCards: ActivityPackageCard[] = [];
-          snapshot.forEach((docSnap) => {
-            const data = docSnap.data() as ActivityPackageCard;
-            if (data && data.id && !['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301'].includes(data.id)) {
-              remoteCards.push(data);
+        const remoteCards: ActivityPackageCard[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as ActivityPackageCard;
+          const cardId = data.id || docSnap.id;
+          if (cardId && !['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301'].includes(cardId)) {
+            remoteCards.push({ ...data, id: cardId });
+          }
+        });
+
+        setActivityCards((prevLocal) => {
+          const remoteCardMap = new Map<string, ActivityPackageCard>();
+          remoteCards.forEach((c) => remoteCardMap.set(c.id, c));
+
+          const merged = [...remoteCards];
+          prevLocal.forEach((localCard) => {
+            if (
+              localCard?.id &&
+              !remoteCardMap.has(localCard.id) &&
+              !['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301'].includes(localCard.id)
+            ) {
+              syncCardToFirestore(localCard);
+              merged.push(localCard);
             }
           });
-          setActivityCards(remoteCards);
+
           try {
-            localStorage.setItem('sangha_v4_cards', JSON.stringify(remoteCards));
+            localStorage.setItem('sangha_v4_cards', JSON.stringify(merged));
           } catch {
             // ignore
           }
-        }
+          return merged;
+        });
       },
       (error) => {
         console.warn('[Firestore] activityCards snapshot sync note:', error.message);
@@ -640,21 +687,34 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const unsubTransactions = onSnapshot(
       collection(db, 'transactions'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteLedger: PaymentLedgerEntry[] = [];
-          snapshot.forEach((docSnap) => {
-            const data = docSnap.data() as PaymentLedgerEntry;
-            if (data && data.id) {
-              remoteLedger.push(data);
+        const remoteLedger: PaymentLedgerEntry[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as PaymentLedgerEntry;
+          const txnId = data.id || docSnap.id;
+          if (txnId) {
+            remoteLedger.push({ ...data, id: txnId });
+          }
+        });
+
+        setPaymentsLedger((prevLocal) => {
+          const remoteLedgerMap = new Map<string, PaymentLedgerEntry>();
+          remoteLedger.forEach((t) => remoteLedgerMap.set(t.id, t));
+
+          const merged = [...remoteLedger];
+          prevLocal.forEach((localTxn) => {
+            if (localTxn?.id && !remoteLedgerMap.has(localTxn.id)) {
+              syncTransactionToFirestore(localTxn);
+              merged.push(localTxn);
             }
           });
-          setPaymentsLedger(remoteLedger);
+
           try {
-            localStorage.setItem('sangha_v4_payments', JSON.stringify(remoteLedger));
+            localStorage.setItem('sangha_v4_payments', JSON.stringify(merged));
           } catch {
             // ignore
           }
-        }
+          return merged;
+        });
       },
       (error) => {
         console.warn('[Firestore] transactions snapshot sync note:', error.message);
@@ -1617,8 +1677,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // Users Directory & Profile Management
   const getUserByToken = (token: string): UserProfile | undefined => {
-    if (currentUser?.userToken === token) return currentUser;
-    return usersAndCompanions.find((u) => u.userToken === token);
+    if (!token) return undefined;
+    const clean = token.trim().toUpperCase();
+    if (currentUser && (currentUser.userToken || '').trim().toUpperCase() === clean) return currentUser;
+    return usersAndCompanions.find((u) => (u.userToken || '').trim().toUpperCase() === clean);
   };
 
   const updateUserAccountStatus = (userToken: string, status: AccountStatus, note?: string) => {
@@ -1838,7 +1900,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // Activity Cards Management
   const getCompanionActivityCards = (companionToken: string): ActivityPackageCard[] => {
-    return activityCards.filter((c) => c.companionToken === companionToken);
+    if (!companionToken) return [];
+    const cleanToken = companionToken.trim().toUpperCase();
+    return activityCards.filter((c) => (c.companionToken || '').trim().toUpperCase() === cleanToken);
   };
 
   const createActivityCard = (
