@@ -12,6 +12,7 @@ import emailjs from '@emailjs/browser';
  * - Fallback Passkey: 889900
  */
 
+// Production Credentials - Embedded permanently for preview & Vercel production
 export const EMAILJS_SERVICE_ID = 'service_5kbh9qo';
 export const EMAILJS_TEMPLATE_ID = 'template_m7uoiuf';
 export const EMAILJS_PUBLIC_KEY = 'BX_yOKOuFB1qNTSTC';
@@ -19,11 +20,7 @@ export const EMAILJS_PUBLIC_KEY = 'BX_yOKOuFB1qNTSTC';
 export const getEmailJsPublicKey = (): string => {
   try {
     const envKey = (import.meta.env.VITE_EMAILJS_PUBLIC_KEY as string) || '';
-    if (envKey) return envKey.trim();
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('vibego_emailjs_public_key') || localStorage.getItem('emailjs_public_key');
-      if (stored) return stored.trim();
-    }
+    if (envKey && envKey.trim()) return envKey.trim();
   } catch {
     // ignore
   }
@@ -41,7 +38,7 @@ export interface UnifiedOtpDispatchResult {
 
 /**
  * Triggers an async unified OTP dispatch structured for real SMS/Email delivery via EmailJS.
- * Targets the user's email address with variable `passcode` containing the 6-digit OTP.
+ * Targets the user's email address with variables {{passcode}} and {{email}}.
  */
 export async function sendUnifiedOtp(
   phone?: string,
@@ -59,8 +56,8 @@ export async function sendUnifiedOtp(
     const publicKey = getEmailJsPublicKey();
     const templateParams: Record<string, unknown> = {
       passcode: validOtp,
-      to_email: cleanEmail,
       email: cleanEmail,
+      to_email: cleanEmail,
       user_email: cleanEmail,
       recipient: cleanEmail,
       to_name: cleanEmail.split('@')[0] || 'Cirqlr Member',
@@ -78,7 +75,6 @@ export async function sendUnifiedOtp(
         // ignore
       }
 
-      // Trigger EmailJS send function targeting user's email with passcode variable
       const response = await emailjs.send(
         EMAILJS_SERVICE_ID,
         EMAILJS_TEMPLATE_ID,
@@ -92,15 +88,15 @@ export async function sendUnifiedOtp(
           `[EmailJS Gateway] Successfully dispatched OTP passcode (${validOtp}) to ${cleanEmail}. Status: ${response.status}`
         );
       }
-    } catch (err) {
-      console.warn(
-        `[EmailJS Gateway Dispatch Notice] Attempted real delivery to ${cleanEmail} (Service: ${EMAILJS_SERVICE_ID}, Template: ${EMAILJS_TEMPLATE_ID}).`,
+    } catch (err: any) {
+      console.error(
+        `[EmailJS Gateway Error] Failed dispatch to ${cleanEmail} (Service: ${EMAILJS_SERVICE_ID}, Template: ${EMAILJS_TEMPLATE_ID}):`,
         err
       );
     }
   }
 
-  // Hidden developer security logging for seamless testing & verification
+  // Developer security logging for seamless testing & verification
   console.info(
     `[Cirqlr Secure Dispatch] Unified 6-digit OTP dispatched to SMS (+91 ${cleanPhone}) and Gmail (${cleanEmail}): ${validOtp}`
   );
@@ -132,11 +128,12 @@ export function verifyOtp(enteredOtp?: string, expectedOtp?: string): boolean {
 }
 
 /**
- * Explicit helper to send 6-digit OTP code using EmailJS
- * Service ID: service_5kbh9qo
- * Template ID: template_m7uoiuf
- * Public Key: BX_yOKOuFB1qNTSTC
- * Template Variable: passcode
+ * Primary production helper to send 6-digit OTP code using EmailJS
+ * Embedded Credentials:
+ * - Service ID: service_5kbh9qo
+ * - Template ID: template_m7uoiuf
+ * - Public Key: BX_yOKOuFB1qNTSTC
+ * - Template Variables: {{passcode}}, {{email}}
  */
 export async function sendOtpViaEmailJs(
   email: string,
@@ -147,20 +144,20 @@ export async function sendOtpViaEmailJs(
   const publicKey = getEmailJsPublicKey();
 
   if (!cleanEmail || !cleanEmail.includes('@')) {
-    return { success: false, error: 'Please enter a valid Gmail address.' };
+    return { success: false, error: 'Please enter a valid Gmail / Email address.' };
   }
 
   const cleanPhone = (phone || '').replace(/\D/g, '').slice(-10);
 
   const templateParams: Record<string, unknown> = {
-    passcode,
-    to_email: cleanEmail,
+    passcode: String(passcode),
     email: cleanEmail,
+    to_email: cleanEmail,
     user_email: cleanEmail,
     recipient: cleanEmail,
     to_name: cleanEmail.split('@')[0] || 'Cirqlr Member',
-    otp: passcode,
-    code: passcode,
+    otp: String(passcode),
+    code: String(passcode),
     phone_number: cleanPhone ? `+91 ${cleanPhone}` : 'N/A',
     platform: 'Cirqlr',
     message: `Your Cirqlr 6-digit OTP verification passcode is: ${passcode}. It is valid for 10 minutes.`,
@@ -180,10 +177,29 @@ export async function sendOtpViaEmailJs(
       publicKey
     );
 
-    console.info(`[EmailJS] OTP passcode ${passcode} dispatched successfully to ${cleanEmail}`, response);
+    console.info(
+      `[EmailJS] OTP passcode ${passcode} dispatched successfully to ${cleanEmail}`,
+      response
+    );
     return { success: true };
   } catch (err: any) {
-    console.error(`[EmailJS] Failed to send OTP to ${cleanEmail}:`, err);
-    return { success: false, error: err?.text || err?.message || 'Failed to dispatch email' };
+    const errorText =
+      err?.text ||
+      err?.message ||
+      (typeof err === 'string' ? err : 'Email delivery failed');
+
+    console.error(`[EmailJS] Failed to send OTP to ${cleanEmail}:`, {
+      serviceId: EMAILJS_SERVICE_ID,
+      templateId: EMAILJS_TEMPLATE_ID,
+      errorText,
+      rawError: err,
+    });
+
+    return {
+      success: false,
+      error: errorText.includes('Account blocked')
+        ? 'Email service temporarily unavailable. Please retry shortly.'
+        : errorText || 'Failed to dispatch verification email. Please try again.',
+    };
   }
 }

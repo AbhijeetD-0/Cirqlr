@@ -329,12 +329,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
     try {
       const result = await sendOtpViaEmailJs(found.email, generatedOtp, cleanPhone);
-      if (!result.success) {
-        console.warn('EmailJS login OTP notice:', result.error);
+      if (result.success) {
+        setLoginOtpSent(true);
+        setLoginError('');
+      } else {
+        setLoginError(
+          `Unable to send OTP: ${result.error || 'Please verify your Gmail address or try again in a moment.'}`
+        );
       }
-      setLoginOtpSent(true);
-    } catch {
-      setLoginOtpSent(true);
+    } catch (err: any) {
+      console.error('[Login OTP Send Exception]', err);
+      setLoginError(`Email delivery failed: ${err?.message || 'Network error occurred. Please try again.'}`);
     } finally {
       setIsSendingLoginOtp(false);
     }
@@ -348,7 +353,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setLoginOtpTimer(60);
     setIsSendingLoginOtp(true);
     try {
-      await sendOtpViaEmailJs(loginUserFound.email, generatedOtp, cleanPhone);
+      const res = await sendOtpViaEmailJs(loginUserFound.email, generatedOtp, cleanPhone);
+      if (!res.success) {
+        setLoginError(`Failed to resend OTP: ${res.error || 'Please try again.'}`);
+      } else {
+        setLoginError('');
+      }
+    } catch (err: any) {
+      console.error('[Login OTP Resend Exception]', err);
+      setLoginError(`Resend failed: ${err?.message || 'Network error.'}`);
     } finally {
       setIsSendingLoginOtp(false);
     }
@@ -429,10 +442,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsResetSubmitting(true);
 
     try {
-      await sendOtpViaEmailJs(found.email, generatedOtp, cleanPhone);
-      setResetStep('otp');
-    } catch {
-      setResetStep('otp');
+      const result = await sendOtpViaEmailJs(found.email, generatedOtp, cleanPhone);
+      if (result.success) {
+        setResetStep('otp');
+        setResetError('');
+      } else {
+        setResetError(
+          `Unable to send OTP: ${result.error || 'Please check your Gmail address or try again.'}`
+        );
+      }
+    } catch (err: any) {
+      console.error('[Reset OTP Send Exception]', err);
+      setResetError(`Email delivery failed: ${err?.message || 'Failed to dispatch email.'}`);
     } finally {
       setIsResetSubmitting(false);
     }
@@ -447,7 +468,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setResetResendTimer(60);
     setIsResetSubmitting(true);
     try {
-      await sendOtpViaEmailJs(resetUserFound.email, generatedOtp, cleanPhone);
+      const result = await sendOtpViaEmailJs(resetUserFound.email, generatedOtp, cleanPhone);
+      if (!result.success) {
+        setResetError(`Failed to resend OTP: ${result.error || 'Please try again.'}`);
+      } else {
+        setResetError('');
+      }
+    } catch (err: any) {
+      console.error('[Reset OTP Resend Exception]', err);
+      setResetError(`Resend failed: ${err?.message || 'Network error.'}`);
     } finally {
       setIsResetSubmitting(false);
     }
@@ -637,12 +666,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
     try {
       const res = await sendOtpViaEmailJs(cleanEmail, generatedOtp, cleanDigits);
-      if (!res.success) {
-        console.warn('EmailJS sign up OTP notice:', res.error);
+      if (res.success) {
+        setSignUpStep(5);
+        setStep4Error('');
+      } else {
+        setStep4Error(
+          `Unable to send OTP: ${res.error || 'Could not deliver code to your email. Please double-check your email address.'}`
+        );
       }
-      setSignUpStep(5);
-    } catch {
-      setSignUpStep(5);
+    } catch (err: any) {
+      console.error('[Sign Up OTP Send Exception]', err);
+      setStep4Error(`Email delivery failed: ${err?.message || 'Network error occurred. Please try again.'}`);
     } finally {
       setIsSendingOtp(false);
     }
@@ -657,7 +691,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setResendTimer(60);
     setIsSendingOtp(true);
     try {
-      await sendOtpViaEmailJs(cleanEmail, generatedOtp, cleanDigits);
+      const res = await sendOtpViaEmailJs(cleanEmail, generatedOtp, cleanDigits);
+      if (!res.success) {
+        setOtpError(`Failed to resend OTP: ${res.error || 'Please try again.'}`);
+      } else {
+        setOtpError('');
+      }
+    } catch (err: any) {
+      console.error('[Sign Up OTP Resend Exception]', err);
+      setOtpError(`Resend failed: ${err?.message || 'Network error.'}`);
     } finally {
       setIsSendingOtp(false);
     }
