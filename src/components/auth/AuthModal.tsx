@@ -39,9 +39,9 @@ import {
  * Embedded directly in source code — zero dependency on .env or external environment variables.
  * Works seamlessly in AI Studio Preview and on live Vercel production deployment.
  */
-const EMAILJS_SERVICE_ID = 'service_5kbh9qo';
-const EMAILJS_TEMPLATE_ID = 'template_m7uoiuf';
-const EMAILJS_PUBLIC_KEY = 'BX_yOKOuFB1qNTSTC';
+const EMAILJS_SERVICE_ID = "service_5kbh9qo".trim();
+const EMAILJS_TEMPLATE_ID = "YOUR_COPIED_TEMPLATE_ID".trim();
+const EMAILJS_PUBLIC_KEY = "BX_yOKOuFB1qNTSTC".trim();
 
 /**
  * Direct EmailJS OTP dispatcher sending passcode using {{passcode}} and {{email}}
@@ -79,9 +79,14 @@ async function sendDirectEmailJsOtp(
       // ignore
     }
 
+    const activeTemplateId =
+      EMAILJS_TEMPLATE_ID && EMAILJS_TEMPLATE_ID !== 'YOUR_COPIED_TEMPLATE_ID'
+        ? EMAILJS_TEMPLATE_ID
+        : 'template_m7uoiuf'.trim();
+
     const response = await emailjs.send(
       EMAILJS_SERVICE_ID,
-      EMAILJS_TEMPLATE_ID,
+      activeTemplateId,
       templateParams,
       EMAILJS_PUBLIC_KEY
     );

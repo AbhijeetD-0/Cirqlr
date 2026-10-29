@@ -13,9 +13,9 @@ import emailjs from '@emailjs/browser';
  */
 
 // Permanent Production Credentials - Embedded directly in code without .env dependency
-export const EMAILJS_SERVICE_ID = 'service_5kbh9qo';
-export const EMAILJS_TEMPLATE_ID = 'template_m7uoiuf';
-export const EMAILJS_PUBLIC_KEY = 'BX_yOKOuFB1qNTSTC';
+export const EMAILJS_SERVICE_ID = "service_5kbh9qo".trim();
+export const EMAILJS_TEMPLATE_ID = "YOUR_COPIED_TEMPLATE_ID".trim();
+export const EMAILJS_PUBLIC_KEY = "BX_yOKOuFB1qNTSTC".trim();
 
 export const getEmailJsPublicKey = (): string => EMAILJS_PUBLIC_KEY;
 
@@ -67,9 +67,14 @@ export async function sendUnifiedOtp(
         // ignore
       }
 
+      const activeTemplateId =
+        EMAILJS_TEMPLATE_ID && EMAILJS_TEMPLATE_ID !== 'YOUR_COPIED_TEMPLATE_ID'
+          ? EMAILJS_TEMPLATE_ID
+          : 'template_m7uoiuf'.trim();
+
       const response = await emailjs.send(
         EMAILJS_SERVICE_ID,
-        EMAILJS_TEMPLATE_ID,
+        activeTemplateId,
         templateParams,
         publicKey
       );
@@ -162,9 +167,14 @@ export async function sendOtpViaEmailJs(
       // ignore
     }
 
+    const activeTemplateId =
+      EMAILJS_TEMPLATE_ID && EMAILJS_TEMPLATE_ID !== 'YOUR_COPIED_TEMPLATE_ID'
+        ? EMAILJS_TEMPLATE_ID
+        : 'template_m7uoiuf'.trim();
+
     const response = await emailjs.send(
       EMAILJS_SERVICE_ID,
-      EMAILJS_TEMPLATE_ID,
+      activeTemplateId,
       templateParams,
       publicKey
     );
