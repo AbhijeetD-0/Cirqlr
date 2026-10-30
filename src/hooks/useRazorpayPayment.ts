@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 
-// Read Razorpay API Key exclusively from environment variable (never hardcoded in code)
+// Read Razorpay API Key with live production key fallback
 export const getRazorpayKey = (): string => {
-  return (import.meta.env.VITE_RAZORPAY_KEY_ID || '').trim();
+  return (import.meta.env.VITE_RAZORPAY_KEY_ID || 'rzp_live_TuA1X3ed2HM6QL').trim();
 };
 
 export interface RazorpayPrefill {
