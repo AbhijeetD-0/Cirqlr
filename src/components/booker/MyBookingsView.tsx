@@ -436,7 +436,7 @@ export const MyBookingsView: React.FC = () => {
 
                   {/* Right Actions: Reschedule, Cancel Booking & Report Companion */}
                   <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
-                    {booking.status === 'Confirmed' && (
+                    {(booking.status === 'Confirmed' || booking.status === 'Accepted' || String(booking.status || '').toLowerCase().includes('pending')) && (
                       <button
                         type="button"
                         onClick={() => setBookingToReschedule(booking)}
@@ -819,6 +819,11 @@ export const MyBookingsView: React.FC = () => {
           booking={cancellingBooking}
           onClose={() => setCancellingBooking(null)}
           onCancelledSuccess={() => setCancellingBooking(null)}
+          onOpenReschedule={() => {
+            const b = cancellingBooking;
+            setCancellingBooking(null);
+            setBookingToReschedule(b);
+          }}
         />
       )}
 

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import {
   PlatformSettings,
   UserProfile,
@@ -19,6 +19,7 @@ import {
   SuspensionNoticeData,
   RescheduleHistoryEntry,
   WalletTransactionEntry,
+  PlatformBroadcast,
 } from '../types/marketplace';
 import { collection, doc, setDoc, onSnapshot, deleteDoc } from 'firebase/firestore';
 import { db, cleanForFirestore } from '../lib/firebase';
@@ -128,8 +129,10 @@ interface MarketplaceContextType {
   updateUserAccountStatus: (userToken: string, status: AccountStatus, note?: string) => void;
   updateCurrentUserProfile: (updates: Partial<UserProfile>) => void;
   updateCurrentUserEmail: (email: string) => { success: boolean; error?: string };
-  verifyUserIdentity: (userToken: string) => void;
+  verifyUserIdentity: (userToken: string, isApproved?: boolean) => void;
   adjustUserWalletCredit: (userToken: string, deltaAmount: number, reason: string) => void;
+  addUserWalletMoney: (userToken: string, amount: number, paymentRefId?: string) => Promise<void>;
+  suspendUser: (userToken: string, type: '7_DAYS' | 'PERMANENT', reason: string) => Promise<void>;
 
   // Companion Pro 1-Month (30 Days) Membership
   submitProSubscriptionPayment: (companionToken: string, customRefId?: string) => string;
@@ -253,6 +256,12 @@ interface MarketplaceContextType {
     prohibitedText?: string
   ) => void;
   liftUserSuspension: (userToken: string) => void;
+
+  // Admin Live Broadcasts & Promotional Offers
+  activeBroadcasts: PlatformBroadcast[];
+  activeLiveBroadcast: PlatformBroadcast | null;
+  dismissLiveBroadcast: (broadcastId: string) => void;
+  sendAdminBroadcast: (broadcast: Omit<PlatformBroadcast, 'id' | 'createdAt'>) => Promise<boolean>;
 }
 
 const INITIAL_SEED_USERS: UserProfile[] = [];
@@ -328,9 +337,13 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       ? (typeof user.monthlyLifelineUsed === 'number' ? user.monthlyLifelineUsed : 0)
       : 0;
 
-    // Preserve verification status if already verified, or verify if docUrl exists
-    const isVerified = user.isVerified !== undefined ? Boolean(user.isVerified) : (user.verificationStatus === 'Verified' || user.verificationStatus === 'ID Verified' || hasIdDoc);
-    const verificationStatus: VerificationStatus = user.verificationStatus || (isVerified ? 'Verified' : 'Unverified');
+    const isRejected = user.verificationStatus === 'Rejected';
+    const isVerified = isRejected 
+      ? false 
+      : (user.isVerified !== undefined ? Boolean(user.isVerified) : (user.verificationStatus === 'Verified' || user.verificationStatus === 'ID Verified' || hasIdDoc));
+    const verificationStatus: VerificationStatus = isRejected ? 'Rejected' : (user.verificationStatus || (isVerified ? 'Verified' : 'Unverified'));
+
+    const isSuspended = user.isSuspended !== undefined ? Boolean(user.isSuspended) : (currentAccountStatus === 'Suspended');
 
     return {
       ...user,
@@ -339,6 +352,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       monthlyLifelineUsed: lifelineUsed,
       monthlyLifelineMonth: lifelineMonth,
       accountStatus: currentAccountStatus,
+      isSuspended,
+      suspensionType: user.suspensionType,
+      suspendedUntil: user.suspendedUntil,
+      hasReferralWelcomeDiscount: Boolean(user.hasReferralWelcomeDiscount),
+      referredByCode: user.referredByCode,
       suspensionExpiryDate: suspensionExpiry,
       suspensionReason,
       suspendedAt,
@@ -358,204 +376,37 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
   };
 
-  // Persistent Initial Storage Hydration with Strict Auto-Migration & Recalculation
-  const initialStorageData = (() => {
+  // Current User Session
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+
+  // Core Data Collections streamed 100% from Cloud Firestore
+  const [usersAndCompanions, setUsersAndCompanions] = useState<UserProfile[]>([]);
+  const [activityCards, setActivityCards] = useState<ActivityPackageCard[]>([]);
+  const [bookings, setBookings] = useState<BookingRecord[]>([]);
+  const [paymentsLedger, setPaymentsLedger] = useState<PaymentLedgerEntry[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [safetyReports, setSafetyReports] = useState<SafetyReport[]>([]);
+  const [platformFeedbacks, setPlatformFeedbacks] = useState<UserFeedback[]>([]);
+  const [activeBroadcasts, setActiveBroadcasts] = useState<PlatformBroadcast[]>([]);
+  const [dismissedBroadcastIds, setDismissedBroadcastIds] = useState<string[]>(() => {
     try {
-      cleanupLegacyStorage();
-      const savedBookings = safeGetItem('sangha_v4_bookings');
-      const rawBookings: BookingRecord[] = savedBookings ? JSON.parse(savedBookings) : [];
-
-      const savedUsers = safeGetItem('sangha_v4_users') || safeGetItem('vibego_v1_users');
-      let rawUsers: UserProfile[] = [];
-      const DUMMY_SEED_TOKENS = ['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'];
-      if (savedUsers) {
-        const parsed = JSON.parse(savedUsers);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          rawUsers = parsed
-            .filter((u) => u && !DUMMY_SEED_TOKENS.includes(u.userToken))
-            .map(sanitizeUserVerification);
-        }
-      }
-
-      // Automated 1-Year Purge: Permanently purge any user whose 365-day legal holding period has elapsed
-      const currentTime = Date.now();
-      rawUsers = rawUsers.filter((u) => {
-        if (u.accountStatus === 'Deleted_Archived' && u.purgeAfter && currentTime >= u.purgeAfter) {
-          return false; // Automatically purged from permanent database
-        }
-        return true;
-      });
-
-      const activeUserToken = safeGetItem('cirqlr_active_user_token');
-      const savedCurrentUser = safeGetItem('sangha_v4_current_user') || safeGetItem('vibego_v1_current_user');
-      let rawCurrentUser: UserProfile | null = null;
-      if (activeUserToken) {
-        rawCurrentUser = rawUsers.find((u) => u.userToken === activeUserToken) || null;
-      }
-      if (!rawCurrentUser && savedCurrentUser) {
-        rawCurrentUser = sanitizeUserVerification(JSON.parse(savedCurrentUser));
-      }
-
-      // If current user is in Deleted_Archived state, clear the session
-      if (rawCurrentUser && rawCurrentUser.accountStatus === 'Deleted_Archived') {
-        rawCurrentUser = null;
-        safeRemoveItem('cirqlr_active_user_token');
-        safeRemoveItem('sangha_v4_current_user');
-        safeRemoveItem('vibego_v1_current_user');
-      }
-
-      const { migratedBookings, migratedUsers } = migrateStoredBookingsAndWallets(
-        rawBookings,
-        rawUsers,
-        DEFAULT_PLATFORM_SETTINGS
-      );
-
-      let migratedCurrentUser = rawCurrentUser;
-      if (rawCurrentUser) {
-        migratedCurrentUser = migratedUsers.find((u) => u.userToken === rawCurrentUser?.userToken) || rawCurrentUser;
-        if (migratedCurrentUser?.accountStatus === 'Deleted_Archived') {
-          migratedCurrentUser = null;
-        }
-      }
-
-      return {
-        bookings: migratedBookings,
-        users: migratedUsers,
-        currentUser: migratedCurrentUser,
-      };
-    } catch {
-      return {
-        bookings: [],
-        users: INITIAL_SEED_USERS,
-        currentUser: null,
-      };
-    }
-  })();
-
-  // Persistent Current User Session
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(initialStorageData.currentUser);
-
-  // Persistent Registered Users & Dummy Seed Accounts (saved in localStorage)
-  const [usersAndCompanions, setUsersAndCompanions] = useState<UserProfile[]>(initialStorageData.users);
-
-  // Activity Cards (Keyed by companion userToken)
-  const [activityCards, setActivityCards] = useState<ActivityPackageCard[]>(() => {
-    try {
-      const saved = localStorage.getItem('sangha_v4_cards');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const DUMMY_SEED_TOKENS = ['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'];
-          const DUMMY_SEED_CARD_IDS = ['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301'];
-          return parsed.filter(
-            (c) => c && !DUMMY_SEED_CARD_IDS.includes(c.id) && !DUMMY_SEED_TOKENS.includes(c.companionToken)
-          );
-        }
-      }
-      return INITIAL_SEED_CARDS;
-    } catch {
-      return INITIAL_SEED_CARDS;
-    }
-  });
-
-  // Bookings
-  const [bookings, setBookings] = useState<BookingRecord[]>(initialStorageData.bookings);
-
-  // Payments Ledger
-  const [paymentsLedger, setPaymentsLedger] = useState<PaymentLedgerEntry[]>(() => {
-    try {
-      const saved = localStorage.getItem('sangha_v4_payments');
-      return saved ? JSON.parse(saved) : [];
+      const stored = sessionStorage.getItem('cirqlr_dismissed_broadcasts');
+      return stored ? JSON.parse(stored) : [];
     } catch {
       return [];
     }
   });
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([
+    {
+      id: 'LOG-001',
+      action: 'Cloud Firestore Real-Time Engine Active',
+      details: 'All collections synchronized live across devices without localStorage caching.',
+      timestamp: new Date().toISOString(),
+      adminToken: 'FOUNDER-ROOT',
+    },
+  ]);
 
-  // Encrypted Chat
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
-    try {
-      const saved = localStorage.getItem('sangha_v4_chat');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  // Safety Reports
-  const [safetyReports, setSafetyReports] = useState<SafetyReport[]>(() => {
-    try {
-      const saved = localStorage.getItem('sangha_v4_reports');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  // Audit Logs
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => {
-    try {
-      const saved = localStorage.getItem('sangha_v4_audit');
-      return saved
-        ? JSON.parse(saved)
-        : [
-            {
-              id: 'LOG-001',
-              action: 'Production Engine Initialized',
-              details: 'Production platform initialized. 21+ Phone OTP Registration & Founder ID Gate Active.',
-              timestamp: new Date().toISOString(),
-              adminToken: 'FOUNDER-ROOT',
-            },
-          ];
-    } catch {
-      return [];
-    }
-  });
-
-  // 3. AUTO-MIGRATE & RECALCULATE ALL EXISTING SAVED DATA IN localStorage ON APP LOAD
-  useEffect(() => {
-    try {
-      const savedBookings = safeGetItem('sangha_v4_bookings');
-      const rawBookings: BookingRecord[] = savedBookings ? JSON.parse(savedBookings) : bookings;
-
-      const savedUsers = safeGetItem('sangha_v4_users') || safeGetItem('vibego_v1_users');
-      let rawUsers: UserProfile[] = usersAndCompanions;
-      if (savedUsers) {
-        const parsed = JSON.parse(savedUsers);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          rawUsers = parsed
-            .filter((u) => u && !['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'].includes(u.userToken))
-            .map(sanitizeUserVerification);
-        }
-      }
-
-      const { migratedBookings, migratedUsers } = migrateStoredBookingsAndWallets(
-        rawBookings,
-        rawUsers,
-        platformSettings
-      );
-
-      // Overwrite any stale 110 or 7% properties in localStorage safely
-      safeSetItem('sangha_v4_bookings', JSON.stringify(migratedBookings));
-      safeSetItem('sangha_v4_users', JSON.stringify(migratedUsers));
-      safeRemoveItem('vibego_v1_users');
-      safeRemoveItem('vibego_v1_current_user');
-
-      setBookings(migratedBookings);
-      setUsersAndCompanions(migratedUsers);
-
-      if (currentUser) {
-        const updatedCurrent = migratedUsers.find((u) => u.userToken === currentUser.userToken);
-        if (updatedCurrent) {
-          setCurrentUser(updatedCurrent);
-          safeSetItem('sangha_v4_current_user', JSON.stringify(updatedCurrent));
-        }
-      }
-    } catch (err) {
-      console.warn('[Fee Recalculation & State Migration Handled]', err);
-    }
-  }, [platformSettings?.baseAcceptanceFeePercent, platformSettings?.repeatFeeReductionPercent]);
-
-  // Real-time Production Firestore Listeners for users, bookings, activityCards, and transactions
+  // Real-time Production Firestore Listeners for ALL platform data collections
   useEffect(() => {
     if (!db) return;
 
@@ -567,38 +418,36 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         snapshot.forEach((docSnap) => {
           const data = docSnap.data() as UserProfile;
           const userToken = data.userToken || docSnap.id;
-          if (userToken && !['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'].includes(userToken)) {
+          const isDummy = ['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003', 'USR-WB-7571'].includes(userToken);
+          if (userToken && !isDummy) {
             remoteUsers.push(sanitizeUserVerification({ ...data, userToken }));
           }
         });
 
-        // Set remote users and auto-sync any local user on this phone not yet in Firestore
-        setUsersAndCompanions((prevLocal) => {
-          const remoteTokenMap = new Map<string, UserProfile>();
-          remoteUsers.forEach((u) => remoteTokenMap.set(u.userToken, u));
+        // Strictly set remote users directly: no local storage merge and no resurrecting
+        setUsersAndCompanions(remoteUsers);
 
-          const merged = [...remoteUsers];
-          prevLocal.forEach((localUser) => {
-            if (
-              localUser?.userToken &&
-              !remoteTokenMap.has(localUser.userToken) &&
-              !['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'].includes(localUser.userToken)
-            ) {
-              syncUserToFirestore(localUser);
-              merged.push(localUser);
-            }
-          });
-
-          safeSetItem('sangha_v4_users', JSON.stringify(merged));
-          return merged;
-        });
-
+        // Session recovery & Live Ban/Block Enforcement on active user across ALL phones
         const activeToken = safeGetItem('cirqlr_active_user_token');
         if (activeToken) {
           const matched = remoteUsers.find((u) => u.userToken === activeToken);
-          if (matched) {
+          if (!matched || matched.accountStatus === 'Deleted_Archived') {
+            // User was permanently purged or deleted by Admin in Firestore -> instant force-logout on user phone!
+            logOutUser();
+          } else if (matched.accountStatus === 'Blocked') {
+            // User was permanently blocked by Admin in Firestore -> instant screen lock!
             setCurrentUser(matched);
-            safeSetItem('sangha_v4_current_user', JSON.stringify(matched));
+            openSuspensionNotice(
+              matched,
+              matched.suspensionReason || 'Permanent Block',
+              'Account access has been permanently revoked by platform security.'
+            );
+          } else if (matched.isSuspended || matched.accountStatus === 'Suspended') {
+            setCurrentUser(matched);
+            openSuspensionNotice(matched);
+          } else {
+            setCurrentUser(matched);
+            closeSuspensionNotice();
           }
         }
       },
@@ -619,29 +468,14 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
             remoteBookings.push({ ...data, id: bookingId });
           }
         });
-
-        setBookings((prevLocal) => {
-          const remoteBookingMap = new Map<string, BookingRecord>();
-          remoteBookings.forEach((b) => remoteBookingMap.set(b.id, b));
-
-          const merged = [...remoteBookings];
-          prevLocal.forEach((localBooking) => {
-            if (localBooking?.id && !remoteBookingMap.has(localBooking.id)) {
-              syncBookingToFirestore(localBooking);
-              merged.push(localBooking);
-            }
-          });
-
-          safeSetItem('sangha_v4_bookings', JSON.stringify(merged));
-          return merged;
-        });
+        setBookings(remoteBookings);
       },
       (error) => {
         console.warn('[Firestore] bookings snapshot sync note:', error.message);
       }
     );
 
-    // 3. Real-time Activity Cards Listener
+    // 3. Real-time Activity Cards Listener (ZERO resurrecting, strict real-time single source of truth)
     const unsubCards = onSnapshot(
       collection(db, 'activityCards'),
       (snapshot) => {
@@ -649,34 +483,15 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         snapshot.forEach((docSnap) => {
           const data = docSnap.data() as ActivityPackageCard;
           const cardId = data.id || docSnap.id;
-          if (cardId && !['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301'].includes(cardId)) {
+          const isDummyCard = ['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301', 'CARD-WB-1195-101', 'ACT-1793294771428-996'].includes(cardId);
+          const isDummyCompanion = ['USR-WB-7571', 'USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003'].includes(data.companionToken);
+          if (cardId && !isDummyCard && !isDummyCompanion) {
             remoteCards.push({ ...data, id: cardId });
           }
         });
 
-        setActivityCards((prevLocal) => {
-          const remoteCardMap = new Map<string, ActivityPackageCard>();
-          remoteCards.forEach((c) => remoteCardMap.set(c.id, c));
-
-          const merged = [...remoteCards];
-          prevLocal.forEach((localCard) => {
-            if (
-              localCard?.id &&
-              !remoteCardMap.has(localCard.id) &&
-              !['CARD-WB-101', 'CARD-OD-201', 'CARD-WB-301'].includes(localCard.id)
-            ) {
-              syncCardToFirestore(localCard);
-              merged.push(localCard);
-            }
-          });
-
-          try {
-            localStorage.setItem('sangha_v4_cards', JSON.stringify(merged));
-          } catch {
-            // ignore
-          }
-          return merged;
-        });
+        // Set remote cards directly: deleted cards are never resurrected
+        setActivityCards(remoteCards);
       },
       (error) => {
         console.warn('[Firestore] activityCards snapshot sync note:', error.message);
@@ -695,29 +510,112 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
             remoteLedger.push({ ...data, id: txnId });
           }
         });
-
-        setPaymentsLedger((prevLocal) => {
-          const remoteLedgerMap = new Map<string, PaymentLedgerEntry>();
-          remoteLedger.forEach((t) => remoteLedgerMap.set(t.id, t));
-
-          const merged = [...remoteLedger];
-          prevLocal.forEach((localTxn) => {
-            if (localTxn?.id && !remoteLedgerMap.has(localTxn.id)) {
-              syncTransactionToFirestore(localTxn);
-              merged.push(localTxn);
-            }
-          });
-
-          try {
-            localStorage.setItem('sangha_v4_payments', JSON.stringify(merged));
-          } catch {
-            // ignore
-          }
-          return merged;
-        });
+        setPaymentsLedger(remoteLedger);
       },
       (error) => {
         console.warn('[Firestore] transactions snapshot sync note:', error.message);
+      }
+    );
+
+    // 5. Real-time Encrypted Chat Messages Listener
+    const unsubChat = onSnapshot(
+      collection(db, 'chatMessages'),
+      (snapshot) => {
+        const remoteMessages: ChatMessage[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as ChatMessage;
+          const msgId = data.id || docSnap.id;
+          if (msgId) {
+            remoteMessages.push({ ...data, id: msgId });
+          }
+        });
+        remoteMessages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+        setChatMessages(remoteMessages);
+      },
+      (error) => {
+        console.warn('[Firestore] chatMessages snapshot sync note:', error.message);
+      }
+    );
+
+    // 6. Real-time Safety Reports Listener
+    const unsubReports = onSnapshot(
+      collection(db, 'safetyReports'),
+      (snapshot) => {
+        const remoteReports: SafetyReport[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as SafetyReport;
+          const repId = data.id || docSnap.id;
+          if (repId) {
+            remoteReports.push({ ...data, id: repId });
+          }
+        });
+        remoteReports.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        setSafetyReports(remoteReports);
+      },
+      (error) => {
+        console.warn('[Firestore] safetyReports snapshot sync note:', error.message);
+      }
+    );
+
+    // 7. Real-time Platform Feedback Listener
+    const unsubFeedback = onSnapshot(
+      collection(db, 'feedback'),
+      (snapshot) => {
+        const remoteFeedback: UserFeedback[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as UserFeedback;
+          const fbId = data.id || docSnap.id;
+          if (fbId) {
+            remoteFeedback.push({ ...data, id: fbId });
+          }
+        });
+        remoteFeedback.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+        setPlatformFeedbacks(remoteFeedback);
+      },
+      (error) => {
+        console.warn('[Firestore] feedback snapshot sync note:', error.message);
+      }
+    );
+
+    // 8. Real-time Audit Logs Listener
+    const unsubAudit = onSnapshot(
+      collection(db, 'auditLogs'),
+      (snapshot) => {
+        const remoteLogs: AuditLog[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as AuditLog;
+          const logId = data.id || docSnap.id;
+          if (logId) {
+            remoteLogs.push({ ...data, id: logId });
+          }
+        });
+        remoteLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        if (remoteLogs.length > 0) {
+          setAuditLogs(remoteLogs);
+        }
+      },
+      (error) => {
+        console.warn('[Firestore] auditLogs snapshot sync note:', error.message);
+      }
+    );
+
+    // 9. Real-time Admin Live Broadcasts & Offers Listener
+    const unsubBroadcasts = onSnapshot(
+      collection(db, 'notifications'),
+      (snapshot) => {
+        const remoteBroadcasts: PlatformBroadcast[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as PlatformBroadcast;
+          const bId = data.id || docSnap.id;
+          if (bId && data.title && data.message) {
+            remoteBroadcasts.push({ ...data, id: bId });
+          }
+        });
+        remoteBroadcasts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setActiveBroadcasts(remoteBroadcasts);
+      },
+      (error) => {
+        console.warn('[Firestore] notifications snapshot sync note:', error.message);
       }
     );
 
@@ -726,6 +624,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       unsubBookings();
       unsubCards();
       unsubTransactions();
+      unsubChat();
+      unsubReports();
+      unsubFeedback();
+      unsubAudit();
+      unsubBroadcasts();
     };
   }, []);
 
@@ -820,16 +723,21 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [activeSuspensionNotice, setActiveSuspensionNotice] = useState<SuspensionNoticeData | null>(null);
 
   const openSuspensionNotice = (user: UserProfile, detectedKeyword?: string, prohibitedText?: string) => {
-    const expiry = user.suspensionExpiryDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const isPermanent = user.suspensionType === 'PERMANENT';
+    const expiry = isPermanent
+      ? undefined
+      : user.suspensionExpiryDate || user.suspendedUntil || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const suspendedAt = user.suspendedAt || new Date().toISOString();
     setActiveSuspensionNotice({
       isOpen: true,
       userToken: user.userToken,
       userName: user.fullName,
-      detectedKeyword: detectedKeyword || user.suspensionReason || 'Prohibited Private Accommodation Keyword',
-      prohibitedText: prohibitedText || user.prohibitedVenueAttempt || 'Restricted accommodation booking attempt',
+      detectedKeyword: detectedKeyword || user.suspensionReason || 'Violation of Community Terms',
+      prohibitedText: prohibitedText || user.prohibitedVenueAttempt || 'Account Suspended by Platform Administration',
       suspensionExpiryDate: expiry,
       suspendedAt,
+      suspensionType: user.suspensionType || '7_DAYS',
+      suspensionReason: user.suspensionReason || detectedKeyword || 'Safety / Terms Violation',
     });
   };
 
@@ -837,13 +745,27 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setActiveSuspensionNotice(null);
   };
 
-  const liftUserSuspension = (userToken: string) => {
+  const liftUserSuspension = async (userToken: string) => {
+    const updates = {
+      accountStatus: 'Active' as const,
+      isSuspended: false,
+      suspensionType: null,
+      suspendedUntil: null,
+      suspensionExpiryDate: null,
+      suspensionReason: null,
+      suspendedAt: null,
+      prohibitedVenueAttempt: null,
+    };
+
     setUsersAndCompanions((prev) =>
       prev.map((u) => {
         if (u.userToken === userToken) {
           return {
             ...u,
             accountStatus: 'Active' as const,
+            isSuspended: false,
+            suspensionType: undefined,
+            suspendedUntil: undefined,
             suspensionExpiryDate: undefined,
             suspensionReason: undefined,
             suspendedAt: undefined,
@@ -859,6 +781,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
           ? {
               ...prev,
               accountStatus: 'Active' as const,
+              isSuspended: false,
+              suspensionType: undefined,
+              suspendedUntil: undefined,
               suspensionExpiryDate: undefined,
               suspensionReason: undefined,
               suspendedAt: undefined,
@@ -870,36 +795,156 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (activeSuspensionNotice?.userToken === userToken) {
       setActiveSuspensionNotice(null);
     }
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'users', userToken), cleanForFirestore(updates), { merge: true });
+      } catch (err: any) {
+        console.warn('[Firestore] liftUserSuspension error:', err?.message);
+      }
+    }
     addAuditLog('User Suspension Lifted', `Founder restored active account standing for ${userToken}.`);
   };
 
-  const suspendUserForSafetyViolation = (
+  // Admin Live Broadcast Handlers & Live Sync
+  const dismissLiveBroadcast = (broadcastId: string) => {
+    setDismissedBroadcastIds((prev) => {
+      if (prev.includes(broadcastId)) return prev;
+      const next = [...prev, broadcastId];
+      try {
+        sessionStorage.setItem('cirqlr_dismissed_broadcasts', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  const sendAdminBroadcast = async (
+    broadcastInput: Omit<PlatformBroadcast, 'id' | 'createdAt'>
+  ): Promise<boolean> => {
+    const newBroadcast: PlatformBroadcast = {
+      id: `BCAST-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+      createdAt: new Date().toISOString(),
+      ...broadcastInput,
+    };
+
+    setActiveBroadcasts((prev) => [newBroadcast, ...prev]);
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'notifications', newBroadcast.id), cleanForFirestore(newBroadcast), { merge: true });
+      } catch (err: any) {
+        console.warn('[Firestore] Broadcast send error:', err?.message);
+      }
+    }
+
+    addAuditLog(
+      'Live Platform Broadcast Dispatched',
+      `Target: [${broadcastInput.target}]. Title: "${broadcastInput.title}". Coupon: ${broadcastInput.couponCode || 'N/A'}.`
+    );
+
+    return true;
+  };
+
+  const activeLiveBroadcast = useMemo(() => {
+    if (activeBroadcasts.length === 0) return null;
+    const currentToken = currentUser?.userToken?.trim().toUpperCase();
+    const currentEmail = currentUser?.email?.trim().toLowerCase();
+
+    return (
+      activeBroadcasts.find((b) => {
+        if (dismissedBroadcastIds.includes(b.id)) return false;
+        if (b.target === 'ALL') return true;
+        if (currentToken && (b.target || '').trim().toUpperCase() === currentToken) return true;
+        if (
+          currentEmail &&
+          ((b.target || '').trim().toLowerCase() === currentEmail ||
+            (b.targetEmail || '').trim().toLowerCase() === currentEmail)
+        ) {
+          return true;
+        }
+        return false;
+      }) || null
+    );
+  }, [activeBroadcasts, currentUser, dismissedBroadcastIds]);
+
+  const suspendUser = async (userToken: string, type: '7_DAYS' | 'PERMANENT', reason: string) => {
+    const nowIso = new Date().toISOString();
+    const is7Days = type === '7_DAYS';
+    const expiryIso = is7Days ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() : undefined;
+    const suspendedUntil = is7Days ? expiryIso : 'Indefinite';
+
+    const updates: Partial<UserProfile> = {
+      accountStatus: type === 'PERMANENT' ? 'Blocked' : 'Suspended',
+      isSuspended: true,
+      suspensionType: type,
+      suspendedUntil,
+      suspensionExpiryDate: expiryIso,
+      suspensionReason: reason,
+      suspendedAt: nowIso,
+    };
+
+    setUsersAndCompanions((prev) =>
+      prev.map((u) => (u.userToken === userToken ? { ...u, ...updates } : u))
+    );
+    if (currentUser?.userToken === userToken) {
+      const updatedCurrent = { ...currentUser, ...updates };
+      setCurrentUser(updatedCurrent);
+      openSuspensionNotice(updatedCurrent, reason, `Admin Action: ${type === '7_DAYS' ? '7-Day Temporary Hold' : 'Permanent Account Ban'}`);
+    }
+
+    // If permanent ban, immediately delete active companion cards from Firestore
+    if (type === 'PERMANENT') {
+      const cardsToDelete = activityCards.filter((c) => c.companionToken === userToken);
+      setActivityCards((prev) => prev.filter((c) => c.companionToken !== userToken));
+      if (db) {
+        cardsToDelete.forEach((c) => {
+          deleteDoc(doc(db, 'activityCards', c.id)).catch(console.warn);
+        });
+      }
+    }
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'users', userToken), cleanForFirestore(updates), { merge: true });
+      } catch (err: any) {
+        console.warn('[Firestore] suspendUser error:', err?.message);
+      }
+    }
+
+    addAuditLog(
+      `User Suspended (${type === '7_DAYS' ? '7-Day Temporary Hold' : 'Permanent Ban'})`,
+      `Admin suspended account ${userToken} [${type}]. Reason: "${reason}". Suspended until: ${suspendedUntil}.`
+    );
+  };
+
+  const suspendUserForSafetyViolation = async (
     userToken: string,
     detectedKeyword?: string,
     prohibitedText?: string
   ) => {
     const nowIso = new Date().toISOString();
-    const expiryTime = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 Days (7 * 24 * 60 * 60 * 1000 ms)
+    const expiryTime = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 Days
     const expiryIso = new Date(expiryTime).toISOString();
     const reason = detectedKeyword
       ? `Prohibited keyword detected: "${detectedKeyword}"`
       : 'Prohibited private accommodation venue attempt';
 
+    const updates: Partial<UserProfile> = {
+      accountStatus: 'Suspended' as const,
+      isSuspended: true,
+      suspensionType: '7_DAYS' as const,
+      suspendedUntil: expiryIso,
+      suspensionExpiryDate: expiryIso,
+      suspensionReason: reason,
+      suspendedAt: nowIso,
+      prohibitedVenueAttempt: prohibitedText,
+    };
+
     // 1. Update user account status to 'Suspended'
     setUsersAndCompanions((prev) =>
-      prev.map((u) => {
-        if (u.userToken === userToken) {
-          return {
-            ...u,
-            accountStatus: 'Suspended' as const,
-            suspensionExpiryDate: expiryIso,
-            suspensionReason: reason,
-            suspendedAt: nowIso,
-            prohibitedVenueAttempt: prohibitedText || u.prohibitedVenueAttempt,
-          };
-        }
-        return u;
-      })
+      prev.map((u) => (u.userToken === userToken ? { ...u, ...updates } : u))
     );
 
     const targetUser = usersAndCompanions.find((u) => u.userToken === userToken) || currentUser;
@@ -926,15 +971,20 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
     setSafetyReports((prev) => [autoReport, ...prev]);
 
+    if (db) {
+      try {
+        await setDoc(doc(db, 'users', userToken), cleanForFirestore(updates), { merge: true });
+        await setDoc(doc(db, 'safetyReports', autoReport.id), cleanForFirestore(autoReport), { merge: true });
+      } catch (err: any) {
+        console.warn('[Firestore] suspendUserForSafetyViolation write error:', err?.message);
+      }
+    }
+
     // 4. Update currentUser and show suspension modal
     if (currentUser?.userToken === userToken) {
       const updatedCurrent: UserProfile = {
         ...currentUser,
-        accountStatus: 'Suspended' as const,
-        suspensionExpiryDate: expiryIso,
-        suspensionReason: reason,
-        suspendedAt: nowIso,
-        prohibitedVenueAttempt: prohibitedText || currentUser.prohibitedVenueAttempt,
+        ...updates,
       };
       setCurrentUser(updatedCurrent);
       openSuspensionNotice(updatedCurrent, detectedKeyword, prohibitedText);
@@ -943,27 +993,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   };
 
-  const [platformFeedbacks, setPlatformFeedbacks] = useState<UserFeedback[]>(() => {
-    try {
-      const saved = localStorage.getItem('cirqlr_feedbacks');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          // Strictly filter out any legacy dummy feedback entries
-          const dummyIds = new Set(['FDB-001', 'FDB-002', 'FDB-003']);
-          const dummyNames = new Set(['Ananya Roy', 'Smita Dash', 'Sourav Mukherjee']);
-          return parsed.filter(
-            (f: UserFeedback) => !dummyIds.has(f.id) && !dummyNames.has(f.userName)
-          );
-        }
-      }
-      return [];
-    } catch {
-      return [];
-    }
-  });
-
-  const submitFeedback = (input: Omit<UserFeedback, 'id' | 'submittedAt'>) => {
+  const submitFeedback = async (input: Omit<UserFeedback, 'id' | 'submittedAt'>) => {
     const newFeedback: UserFeedback = {
       ...input,
       id: `FDB-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
@@ -971,24 +1001,35 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
 
     setPlatformFeedbacks((prev) => [newFeedback, ...prev]);
+    if (db) {
+      try {
+        await setDoc(doc(db, 'feedback', newFeedback.id), cleanForFirestore(newFeedback), { merge: true });
+      } catch (err: any) {
+        console.warn('[Firestore] submitFeedback error:', err?.message);
+      }
+    }
     addAuditLog(
       'User Feedback Submitted',
       `${input.userName} (${input.userToken}) submitted ${input.rating}-Star [${input.category}] feedback: "${input.message.slice(0, 50)}..."`
     );
   };
 
-  const deleteFeedback = (feedbackId: string) => {
-    setPlatformFeedbacks((prev) => {
-      const target = prev.find((f) => f.id === feedbackId);
-      const filtered = prev.filter((f) => f.id !== feedbackId);
-      if (target) {
-        addAuditLog(
-          'User Feedback Removed',
-          `Admin deleted feedback ${feedbackId} submitted by ${target.userName} (${target.userToken}).`
-        );
+  const deleteFeedback = async (feedbackId: string) => {
+    const target = platformFeedbacks.find((f) => f.id === feedbackId);
+    setPlatformFeedbacks((prev) => prev.filter((f) => f.id !== feedbackId));
+    if (db) {
+      try {
+        await deleteDoc(doc(db, 'feedback', feedbackId));
+      } catch (err: any) {
+        console.warn('[Firestore] deleteFeedback error:', err?.message);
       }
-      return filtered;
-    });
+    }
+    if (target) {
+      addAuditLog(
+        'User Feedback Removed',
+        `Admin deleted feedback ${feedbackId} submitted by ${target.userName} (${target.userToken}).`
+      );
+    }
   };
 
   // On initial mount, purge any leftover hash from previous session to ensure Home screen displays cleanly
@@ -1164,6 +1205,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const loginUserAccount = (user: UserProfile) => {
     setCurrentUser(user);
+    safeSetItem('cirqlr_active_user_token', user.userToken);
     addAuditLog('User Logged In', `Session authenticated for ${user.userToken} (${user.fullName}).`);
   };
 
@@ -1181,6 +1223,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         }
       }
       setCurrentUser(user);
+      safeSetItem('cirqlr_active_user_token', user.userToken);
       addAuditLog('User Logged In', `Session authenticated for ${user.userToken} (${user.fullName}).`);
       return { success: true, isNewUser: false, user };
     }
@@ -1235,6 +1278,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
 
     setCurrentUser(user);
+    safeSetItem('cirqlr_active_user_token', user.userToken);
     addAuditLog('User Logged In', `Session authenticated with password for ${user.userToken} (${user.fullName}).`);
     return { success: true, user };
   };
@@ -1245,19 +1289,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       return { success: false, error: 'User account not found.' };
     }
     const updatedUser: UserProfile = { ...user, password: newPassword };
-    setUsersAndCompanions((prev) => {
-      const next = prev.map((u) => (u.userToken === userToken ? updatedUser : u));
-      try {
-        localStorage.setItem('vibego_v1_users', JSON.stringify(next));
-        localStorage.setItem('sangha_v4_users', JSON.stringify(next));
-      } catch (e) {
-        console.warn('Failed to sync updated password to localStorage', e);
-      }
-      return next;
-    });
+    setUsersAndCompanions((prev) => prev.map((u) => (u.userToken === userToken ? updatedUser : u)));
     if (currentUser?.userToken === userToken) {
       setCurrentUser(updatedUser);
     }
+    syncUserToFirestore(updatedUser);
     addAuditLog('Password Reset', `Password updated successfully for ${user.userToken} (${user.fullName}).`);
     return { success: true, user: updatedUser };
   };
@@ -1308,6 +1344,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (currentUser?.userToken === userToken) {
       setCurrentUser(updatedUser);
     }
+    syncUserToFirestore(updatedUser);
     addAuditLog(
       'ID Verification Uploaded',
       `${userToken} uploaded ${documentType} for identity verification. Automated Instant Verification: ${isNowVerified ? 'ACTIVE & VERIFIED' : 'UNVERIFIED'}. ID record added to audit log.`
@@ -1411,18 +1448,21 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const refToken = referredByUser.userToken;
       const updatedCredits = (referredByUser.referralCredits || 0) + 1;
       const updatedTotal = (referredByUser.totalReferrals || 0) + 1;
+      const updatedReferrer: UserProfile = {
+        ...referredByUser,
+        referralCredits: updatedCredits,
+        totalReferrals: updatedTotal,
+        isCommunityAmbassador: true,
+      };
       setUsersAndCompanions((prev) =>
-        prev.map((u) =>
-          u.userToken === refToken
-            ? { ...u, referralCredits: updatedCredits, totalReferrals: updatedTotal, isCommunityAmbassador: true }
-            : u
-        )
+        prev.map((u) => (u.userToken === refToken ? updatedReferrer : u))
       );
       if (currentUser?.userToken === refToken) {
-        setCurrentUser((prev) =>
-          prev ? { ...prev, referralCredits: updatedCredits, totalReferrals: updatedTotal, isCommunityAmbassador: true } : null
-        );
+        setCurrentUser(updatedReferrer);
       }
+      // Immediately persist referrer's reward to Firestore!
+      syncUserToFirestore(updatedReferrer);
+
       addAuditLog(
         'Referral Reward Credited',
         `User ${userToken} registered using referral code "${cleanRefInput}". Referrer ${referredByUser.fullName} (${refToken}) awarded +1 5% Fee Waiver discount credit (Total Credits: ${updatedCredits}) and Community Ambassador status.`
@@ -1469,7 +1509,8 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       subscriptionStatus: 'none',
       referralCode: `REF-${userToken.replace('USR-', '')}`,
       totalReferrals: 0,
-      referralCredits: 0,
+      referralCredits: referredByUser ? 1 : 0, // Two-way 5% referral credit for new user!
+      hasReferralWelcomeDiscount: Boolean(referredByUser),
       isCommunityAmbassador: false,
       referredByCode: cleanRefInput || undefined,
       cancellationCreditBalance: 0,
@@ -1477,39 +1518,16 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       monthlyLifelineMonth: nowIso.slice(0, 7),
     };
 
-    // Starter Activity Package Card to guarantee immediate live visibility in Explore
-    const starterCardId = `CARD-${userToken.replace('USR-', '')}-101`;
-    const starterCard: ActivityPackageCard = {
-      id: starterCardId,
-      companionToken: userToken,
-      title: `${input.city} Social Outing & Cafe Meetup`,
-      venueCategory: 'Verified Cafe & Restaurant',
-      shortDescription: 'Friendly conversation over coffee or tea at verified cafes, shopping malls, or cultural venues.',
-      city: input.city,
-      hourlyRate: 350,
-      createdAt: nowIso,
-    };
-
     setUsersAndCompanions((prev) => [newUser, ...prev.filter((u) => u.userToken !== newUser.userToken)]);
     setCurrentUser(newUser);
     safeSetItem('cirqlr_active_user_token', newUser.userToken);
-    safeSetItem('sangha_v4_current_user', JSON.stringify(newUser));
 
-    setActivityCards((prev) => [starterCard, ...prev.filter((c) => c.id !== starterCard.id)]);
-    try {
-      const currentCards = JSON.parse(localStorage.getItem('sangha_v4_cards') || '[]');
-      localStorage.setItem('sangha_v4_cards', JSON.stringify([starterCard, ...currentCards.filter((c: any) => c?.id !== starterCard.id)]));
-    } catch {
-      // ignore
-    }
-
-    // Persist user and card to Firestore immediately
+    // Persist new user and initial wallet to Firestore immediately
     syncUserToFirestore(newUser);
-    syncCardToFirestore(starterCard);
 
     addAuditLog(
       'New User Registered',
-      `Registered account ${userToken} (${input.fullName}, ${input.gender}, ${input.city}). Address verification: ${input.documentType ? `[${input.documentType}: ${input.documentIdNumber}]` : '[Pending Upload]'}.${referredByUser ? ` Referred by ${referredByUser.fullName} (${cleanRefInput}).` : ''}`
+      `Registered account ${userToken} (${input.fullName}, ${input.gender}, ${input.city}). Address verification: ${input.documentType ? `[${input.documentType}: ${input.documentIdNumber}]` : '[Pending Upload]'}.${referredByUser ? ` Referred by ${referredByUser.fullName} (${cleanRefInput}) - 5% Welcome Credit awarded to both.` : ''}`
     );
 
     return { success: true, user: newUser };
@@ -1598,11 +1616,22 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const permanentlyPurgeArchivedUser = (userToken: string) => {
     setUsersAndCompanions((prev) => prev.filter((u) => u.userToken !== userToken));
+    const cardsToDelete = activityCards.filter((c) => c.companionToken === userToken);
     setActivityCards((prev) => prev.filter((c) => c.companionToken !== userToken));
     if (db) {
       deleteDoc(doc(db, 'users', userToken)).catch(console.warn);
       deleteDoc(doc(db, 'wallets', userToken)).catch(console.warn);
+      cardsToDelete.forEach((c) => {
+        deleteDoc(doc(db, 'activityCards', c.id)).catch(console.warn);
+      });
     }
+
+    // Force-logout immediately if the purged user is currently logged in on this client
+    const activeToken = safeGetItem('cirqlr_active_user_token');
+    if (currentUser?.userToken === userToken || activeToken === userToken) {
+      logOutUser();
+    }
+
     addAuditLog(
       'Permanent Account Purge',
       `User ${userToken} permanently purged from all database records following statutory legal holding period.`
@@ -1685,53 +1714,161 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const updateUserAccountStatus = (userToken: string, status: AccountStatus, note?: string) => {
     let targetUser: UserProfile | undefined;
-    if (currentUser?.userToken === userToken) {
-      setCurrentUser((prev) => (prev ? { ...prev, accountStatus: status } : null));
-    }
+    const isBlocked = status === 'Blocked';
     setUsersAndCompanions((prev) =>
       prev.map((u) => {
         if (u.userToken === userToken) {
-          targetUser = { ...u, accountStatus: status };
+          targetUser = {
+            ...u,
+            accountStatus: status,
+            isSuspended: isBlocked ? true : (status === 'Suspended' ? true : u.isSuspended),
+            suspensionType: isBlocked ? 'PERMANENT' : u.suspensionType,
+            suspendedUntil: isBlocked ? 'Indefinite' : u.suspendedUntil,
+            suspensionReason: note || u.suspensionReason || (isBlocked ? 'Account permanently blocked by platform security.' : undefined),
+          };
           return targetUser;
         }
         return u;
       })
     );
+
+    if (currentUser?.userToken === userToken) {
+      if (targetUser) {
+        setCurrentUser(targetUser);
+        if (isBlocked) {
+          openSuspensionNotice(targetUser, 'Permanent Block', note || 'Account access has been permanently revoked by platform security.');
+        }
+      } else {
+        setCurrentUser((prev) => (prev ? { ...prev, accountStatus: status } : null));
+      }
+    }
+
     if (targetUser) {
       syncUserToFirestore(targetUser);
     }
+
+    // When account is Blocked, purge all active companion cards from Firestore & local state immediately
+    if (isBlocked) {
+      const cardsToDelete = activityCards.filter((c) => c.companionToken === userToken);
+      setActivityCards((prev) => prev.filter((c) => c.companionToken !== userToken));
+      if (db) {
+        cardsToDelete.forEach((c) => {
+          deleteDoc(doc(db, 'activityCards', c.id)).catch(console.warn);
+        });
+      }
+    }
+
     addAuditLog(
       'Account Standing Updated',
       `Account ${userToken} set to [${status}]. ${note ? `Note: ${note}` : ''}`
     );
   };
 
-  // Direct Verify Tick (Approve ID ✔)
-  const verifyUserIdentity = (userToken: string) => {
-    let targetUser: UserProfile | undefined;
-    if (currentUser?.userToken === userToken) {
-      setCurrentUser((prev) => (prev ? { ...prev, verificationStatus: 'ID Verified' } : null));
-    }
+  // Government ID Verification (Approve / Reject) with Firestore Persistence
+  const verifyUserIdentity = async (userToken: string, isApproved: boolean = true) => {
+    const status: VerificationStatus = isApproved ? 'Verified' : 'Rejected';
+    const isVerified = isApproved;
+
     setUsersAndCompanions((prev) =>
-      prev.map((u) => {
-        if (u.userToken === userToken) {
-          targetUser = { ...u, verificationStatus: 'ID Verified' };
-          return targetUser;
-        }
-        return u;
-      })
+      prev.map((u) => (u.userToken === userToken ? { ...u, verificationStatus: status, isVerified } : u))
     );
-    if (targetUser) {
-      syncUserToFirestore(targetUser);
+    if (currentUser?.userToken === userToken) {
+      setCurrentUser((prev) => (prev ? { ...prev, verificationStatus: status, isVerified } : null));
     }
+
+    if (db) {
+      try {
+        await setDoc(
+          doc(db, 'users', userToken),
+          cleanForFirestore({ verificationStatus: status, isVerified }),
+          { merge: true }
+        );
+      } catch (err: any) {
+        console.warn('[Firestore] verifyUserIdentity write error:', err?.message);
+      }
+    }
+
     addAuditLog(
-      'User ID Verified',
-      `Founder approved government ID verification for ${userToken}. User is now live in public Explore!`
+      isApproved ? 'User ID Verified' : 'User ID Verification Rejected',
+      `Founder ${isApproved ? 'approved' : 'rejected'} government ID verification for ${userToken}. Status set to [${status}].`
     );
   };
 
-  // ADMIN PANEL MANUAL WALLET CREDIT ADJUSTMENT (+ / - ₹)
-  const adjustUserWalletCredit = (userToken: string, deltaAmount: number, reason: string) => {
+  // User Wallet Top Up / Add Money with Atomic Firestore Persistence
+  const addUserWalletMoney = async (userToken: string, amount: number, paymentRefId?: string) => {
+    if (!userToken || amount <= 0) return;
+    const nowIso = new Date().toISOString();
+    const refId = paymentRefId || `pay_topup_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+    const wltId = `wlt_topup_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
+
+    const walletTxn: WalletTransactionEntry = {
+      id: wltId,
+      paymentReferenceId: refId,
+      type: 'credit',
+      amount,
+      reason: `Wallet Top Up via Razorpay (${refId})`,
+      timestamp: nowIso,
+    };
+
+    const targetUser = usersAndCompanions.find((u) => u.userToken === userToken) || currentUser;
+    const currentBal = targetUser?.cancellationCreditBalance || 0;
+    const newBal = currentBal + amount;
+    const newHistory = [walletTxn, ...(targetUser?.walletHistory || [])];
+
+    // Atomically update local state
+    setUsersAndCompanions((prev) =>
+      prev.map((u) => (u.userToken === userToken ? { ...u, cancellationCreditBalance: newBal, walletHistory: newHistory } : u))
+    );
+    if (currentUser?.userToken === userToken) {
+      setCurrentUser((prev) => (prev ? { ...prev, cancellationCreditBalance: newBal, walletHistory: newHistory } : null));
+    }
+
+    // Persist to Firestore: users, wallets, transactions
+    if (db) {
+      try {
+        await setDoc(
+          doc(db, 'users', userToken),
+          cleanForFirestore({ cancellationCreditBalance: newBal, walletHistory: newHistory }),
+          { merge: true }
+        );
+        await setDoc(
+          doc(db, 'wallets', userToken),
+          cleanForFirestore({
+            userToken,
+            userName: targetUser?.fullName || 'User',
+            cancellationCreditBalance: newBal,
+            walletHistory: newHistory,
+            updatedAt: nowIso,
+          }),
+          { merge: true }
+        );
+        const ledgerEntry: PaymentLedgerEntry = {
+          id: `TXN-TOPUP-${Date.now()}`,
+          razorpayRefId: refId,
+          paymentReferenceId: refId,
+          type: 'Wallet Top Up' as any,
+          bookerToken: userToken,
+          bookerName: targetUser?.fullName || 'User',
+          companionToken: userToken,
+          companionName: targetUser?.fullName || 'User',
+          grossOutingValue: amount,
+          effectiveFeePercent: 0,
+          feeAmount: amount,
+          status: 'VERIFIED & RELEASED',
+          timestamp: nowIso,
+          verifiedAt: nowIso,
+        };
+        await setDoc(doc(db, 'transactions', ledgerEntry.id), cleanForFirestore(ledgerEntry), { merge: true });
+      } catch (err: any) {
+        console.warn('[Firestore] addUserWalletMoney write error:', err?.message);
+      }
+    }
+
+    addAuditLog('Wallet Top Up', `User ${userToken} added ₹${amount} to wallet balance. Ref: ${refId}. New Balance: ₹${newBal}.`);
+  };
+
+  // ADMIN PANEL MANUAL WALLET CREDIT ADJUSTMENT (+ / - ₹) with Atomic Firestore Persistence
+  const adjustUserWalletCredit = async (userToken: string, deltaAmount: number, reason: string) => {
     const cleanReason = (reason || '').trim() || 'Admin Manual Wallet Adjustment';
     const nowIso = new Date().toISOString();
     const wltId = `wlt_adm_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
@@ -1745,39 +1882,61 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       adminToken: 'FOUNDER-ROOT',
     };
 
-    setUsersAndCompanions((prev) =>
-      prev.map((u) => {
-        if (u.userToken === userToken) {
-          const currentBal = u.cancellationCreditBalance || 0;
-          const newBal = Math.max(0, currentBal + deltaAmount);
-          const history = [txnEntry, ...(u.walletHistory || [])];
-          return {
-            ...u,
-            cancellationCreditBalance: newBal,
-            walletHistory: history,
-          };
-        }
-        return u;
-      })
-    );
+    const targetUser = usersAndCompanions.find((u) => u.userToken === userToken) || currentUser;
+    const currentBal = targetUser?.cancellationCreditBalance || 0;
+    const newBal = Math.max(0, currentBal + deltaAmount);
+    const newHistory = [txnEntry, ...(targetUser?.walletHistory || [])];
 
+    setUsersAndCompanions((prev) =>
+      prev.map((u) => (u.userToken === userToken ? { ...u, cancellationCreditBalance: newBal, walletHistory: newHistory } : u))
+    );
     if (currentUser?.userToken === userToken) {
-      setCurrentUser((prev) => {
-        if (!prev) return null;
-        const currentBal = prev.cancellationCreditBalance || 0;
-        const newBal = Math.max(0, currentBal + deltaAmount);
-        const history = [txnEntry, ...(prev.walletHistory || [])];
-        return {
-          ...prev,
-          cancellationCreditBalance: newBal,
-          walletHistory: history,
+      setCurrentUser((prev) => (prev ? { ...prev, cancellationCreditBalance: newBal, walletHistory: newHistory } : null));
+    }
+
+    if (db) {
+      try {
+        await setDoc(
+          doc(db, 'users', userToken),
+          cleanForFirestore({ cancellationCreditBalance: newBal, walletHistory: newHistory }),
+          { merge: true }
+        );
+        await setDoc(
+          doc(db, 'wallets', userToken),
+          cleanForFirestore({
+            userToken,
+            userName: targetUser?.fullName || 'User',
+            cancellationCreditBalance: newBal,
+            walletHistory: newHistory,
+            updatedAt: nowIso,
+          }),
+          { merge: true }
+        );
+        const ledgerEntry: PaymentLedgerEntry = {
+          id: `TXN-ADJUST-${Date.now()}`,
+          razorpayRefId: wltId,
+          paymentReferenceId: wltId,
+          type: 'Admin Wallet Adjustment' as any,
+          bookerToken: userToken,
+          bookerName: targetUser?.fullName || 'User',
+          companionToken: userToken,
+          companionName: targetUser?.fullName || 'User',
+          grossOutingValue: Math.abs(deltaAmount),
+          effectiveFeePercent: 0,
+          feeAmount: Math.abs(deltaAmount),
+          status: 'VERIFIED & RELEASED',
+          timestamp: nowIso,
+          verifiedAt: nowIso,
         };
-      });
+        await setDoc(doc(db, 'transactions', ledgerEntry.id), cleanForFirestore(ledgerEntry), { merge: true });
+      } catch (err: any) {
+        console.warn('[Firestore] adjustUserWalletCredit write error:', err?.message);
+      }
     }
 
     addAuditLog(
       'Manual Wallet Credit Adjustment',
-      `Admin adjusted wallet for ${userToken} by ${deltaAmount >= 0 ? '+' : ''}₹${deltaAmount}. Reason: "${cleanReason}".`
+      `Admin adjusted wallet for ${userToken} by ${deltaAmount >= 0 ? '+' : ''}₹${deltaAmount}. Reason: "${cleanReason}". New Balance: ₹${newBal}.`
     );
   };
 
@@ -1891,6 +2050,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setUsersAndCompanions((prev) =>
       prev.map((u) => (u.userToken === companionToken ? { ...u, ...updatedFields } : u))
     );
+
+    const targetComp = usersAndCompanions.find((u) => u.userToken === companionToken) || currentUser;
+    if (targetComp) {
+      syncUserToFirestore({ ...targetComp, ...updatedFields });
+    }
 
     addAuditLog(
       'Companion Pro 30-Day Pass Activated',
@@ -2204,30 +2368,36 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setActiveChatBookingId(null);
     }
 
+    const updatedBooking = { ...booking, status: 'Completed' as const };
     setBookings((prev) =>
-      prev.map((b) => (b.id === bookingId ? { ...b, status: 'Completed' as const } : b))
+      prev.map((b) => (b.id === bookingId ? updatedBooking : b))
     );
+    syncBookingToFirestore(updatedBooking);
 
     const companion = getUserByToken(booking.companionToken);
     if (companion) {
       const updatedCount = (companion.completedOutingsCount || 0) + 1;
+      const updatedCompanion = { ...companion, completedOutingsCount: updatedCount };
       setUsersAndCompanions((prev) =>
-        prev.map((u) => (u.userToken === companion.userToken ? { ...u, completedOutingsCount: updatedCount } : u))
+        prev.map((u) => (u.userToken === companion.userToken ? updatedCompanion : u))
       );
       if (currentUser?.userToken === companion.userToken) {
-        setCurrentUser((prev) => (prev ? { ...prev, completedOutingsCount: updatedCount } : null));
+        setCurrentUser(updatedCompanion);
       }
+      syncUserToFirestore(updatedCompanion);
     }
 
     const booker = getUserByToken(booking.bookerToken);
     if (booker) {
       const updatedBookerCount = (booker.completedOutingsCount || 0) + 1;
+      const updatedBooker = { ...booker, completedOutingsCount: updatedBookerCount };
       setUsersAndCompanions((prev) =>
-        prev.map((u) => (u.userToken === booker.userToken ? { ...u, completedOutingsCount: updatedBookerCount } : u))
+        prev.map((u) => (u.userToken === booker.userToken ? updatedBooker : u))
       );
       if (currentUser?.userToken === booker.userToken) {
-        setCurrentUser((prev) => (prev ? { ...prev, completedOutingsCount: updatedBookerCount } : null));
+        setCurrentUser(updatedBooker);
       }
+      syncUserToFirestore(updatedBooker);
     }
 
     const systemMsg: ChatMessage = {
@@ -2240,6 +2410,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       isSystemNotice: true,
     };
     setChatMessages((prev) => [...prev, systemMsg]);
+    if (db) {
+      setDoc(doc(db, 'chatMessages', systemMsg.id), cleanForFirestore(systemMsg), { merge: true }).catch(console.warn);
+    }
 
     addAuditLog('Outing Completed', `Booking ${booking.bookingToken} marked as Completed by Companion. Chat channel locked.`);
   };
@@ -2248,21 +2421,19 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const booking = bookings.find((b) => b.id === bookingId);
     if (!booking) return;
 
+    const updatedBooking = {
+      ...booking,
+      userRating: rating,
+      userReview: review.trim(),
+      ratingSubmitted: true,
+      bookerRating: rating,
+      bookerReview: review.trim(),
+      bookerRatingSubmitted: true,
+    };
     setBookings((prev) =>
-      prev.map((b) =>
-        b.id === bookingId
-          ? {
-              ...b,
-              userRating: rating,
-              userReview: review.trim(),
-              ratingSubmitted: true,
-              bookerRating: rating,
-              bookerReview: review.trim(),
-              bookerRatingSubmitted: true,
-            }
-          : b
-      )
+      prev.map((b) => (b.id === bookingId ? updatedBooking : b))
     );
+    syncBookingToFirestore(updatedBooking);
 
     const companion = getUserByToken(booking.companionToken);
     if (companion) {
@@ -2273,17 +2444,15 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         ? Number(rating.toFixed(2)) 
         : Number(((currentRating * currentReviews + rating) / newReviewCount).toFixed(2));
 
+      const updatedComp = { ...companion, rating: newRating, reviewCount: newReviewCount };
       setUsersAndCompanions((prev) =>
-        prev.map((u) =>
-          u.userToken === companion.userToken
-            ? { ...u, rating: newRating, reviewCount: newReviewCount }
-            : u
-        )
+        prev.map((u) => (u.userToken === companion.userToken ? updatedComp : u))
       );
 
       if (currentUser?.userToken === companion.userToken) {
-        setCurrentUser((prev) => (prev ? { ...prev, rating: newRating, reviewCount: newReviewCount } : null));
+        setCurrentUser(updatedComp);
       }
+      syncUserToFirestore(updatedComp);
     }
 
     addAuditLog(
@@ -2296,18 +2465,16 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const booking = bookings.find((b) => b.id === bookingId);
     if (!booking) return;
 
+    const updatedBooking = {
+      ...booking,
+      companionRating: rating,
+      companionReview: review.trim(),
+      companionRatingSubmitted: true,
+    };
     setBookings((prev) =>
-      prev.map((b) =>
-        b.id === bookingId
-          ? {
-              ...b,
-              companionRating: rating,
-              companionReview: review.trim(),
-              companionRatingSubmitted: true,
-            }
-          : b
-      )
+      prev.map((b) => (b.id === bookingId ? updatedBooking : b))
     );
+    syncBookingToFirestore(updatedBooking);
 
     const booker = getUserByToken(booking.bookerToken);
     if (booker) {
@@ -2318,17 +2485,15 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         ? Number(rating.toFixed(2)) 
         : Number(((currentRating * currentReviews + rating) / newReviewCount).toFixed(2));
 
+      const updatedBooker = { ...booker, rating: newRating, reviewCount: newReviewCount };
       setUsersAndCompanions((prev) =>
-        prev.map((u) =>
-          u.userToken === booker.userToken
-            ? { ...u, rating: newRating, reviewCount: newReviewCount }
-            : u
-        )
+        prev.map((u) => (u.userToken === booker.userToken ? updatedBooker : u))
       );
 
       if (currentUser?.userToken === booker.userToken) {
-        setCurrentUser((prev) => (prev ? { ...prev, rating: newRating, reviewCount: newReviewCount } : null));
+        setCurrentUser(updatedBooker);
       }
+      syncUserToFirestore(updatedBooker);
     }
 
     addAuditLog(
@@ -2365,27 +2530,18 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       ? [...booking.rescheduleHistory, historyEntry]
       : [historyEntry];
 
-    setBookings((prev) => {
-      const updated = prev.map((b) =>
-        b.id === bookingId
-          ? {
-              ...b,
-              outingDate: newDate,
-              outingTime: newTime,
-              rescheduledCount: (b.rescheduledCount || 0) + 1,
-              rescheduledAt: nowIso,
-              rescheduledByToken: reschedulerToken,
-              rescheduleHistory: updatedHistory,
-            }
-          : b
-      );
-      try {
-        localStorage.setItem('sangha_v4_bookings', JSON.stringify(updated));
-      } catch (err) {
-        console.error('[Reschedule Booking Storage Error]', err);
-      }
-      return updated;
-    });
+    const updatedBooking = {
+      ...booking,
+      outingDate: newDate,
+      outingTime: newTime,
+      rescheduledCount: (booking.rescheduledCount || 0) + 1,
+      rescheduledAt: nowIso,
+      rescheduledByToken: reschedulerToken,
+      rescheduleHistory: updatedHistory,
+    };
+
+    setBookings((prev) => prev.map((b) => (b.id === bookingId ? updatedBooking : b)));
+    syncBookingToFirestore(updatedBooking);
 
     const chatNotice: ChatMessage = {
       id: `MSG-RESCHED-${Date.now()}`,
@@ -2397,6 +2553,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       isSystemNotice: true,
     };
     setChatMessages((prev) => [...prev, chatNotice]);
+    if (db) {
+      setDoc(doc(db, 'chatMessages', chatNotice.id), cleanForFirestore(chatNotice), { merge: true }).catch(console.warn);
+    }
 
     addAuditLog(
       'Free Outing Reschedule Executed',
@@ -2529,6 +2688,38 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       'Dispute Resolved: Fee Refunded & Booker Blocked',
       `Booking ${booking.bookingToken} disputed. Refunded ₹${feeToRefund} to Companion ${booking.companionName} (${booking.companionToken}) wallet. Offending Booker ${booking.bookerName} (${booking.bookerToken}) permanently blocked. Reason: "${disputeReason}".`
     );
+
+    if (db) {
+      try {
+        const comp = getUserByToken(booking.companionToken);
+        if (comp) {
+          const compBal = (comp.cancellationCreditBalance || 0) + feeToRefund;
+          const compHistory = [walletEntry, ...(comp.walletHistory || [])];
+          setDoc(doc(db, 'users', booking.companionToken), cleanForFirestore({ cancellationCreditBalance: compBal, walletHistory: compHistory }), { merge: true }).catch(console.warn);
+          setDoc(doc(db, 'wallets', booking.companionToken), cleanForFirestore({
+            userToken: booking.companionToken,
+            userName: comp.fullName,
+            cancellationCreditBalance: compBal,
+            walletHistory: compHistory,
+            updatedAt: nowIso,
+          }), { merge: true }).catch(console.warn);
+        }
+        setDoc(doc(db, 'users', booking.bookerToken), cleanForFirestore({
+          accountStatus: 'Blocked',
+          suspensionReason: disputeReason,
+          suspendedAt: nowIso,
+        }), { merge: true }).catch(console.warn);
+        setDoc(doc(db, 'bookings', booking.id), cleanForFirestore({
+          status: newStatus,
+          cancellationReason: disputeReason,
+          cancellationFeeRefundedAmount: feeToRefund,
+          cancelledAt: nowIso,
+        }), { merge: true }).catch(console.warn);
+        setDoc(doc(db, 'safetyReports', disputeReport.id), cleanForFirestore(disputeReport), { merge: true }).catch(console.warn);
+      } catch (err: any) {
+        console.warn('[Firestore] resolveBookingDispute write error:', err?.message);
+      }
+    }
   };
 
   // CASE A — CANCELLED BY BOOKER (Zero Companion Fault):
@@ -2833,6 +3024,18 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         emergencyLifelineUsed: true,
       });
 
+      if (companionUser) {
+        syncUserToFirestore({
+          ...companionUser,
+          cancellationCreditBalance: (companionUser.cancellationCreditBalance || 0) + feeToCredit,
+          monthlyLifelineUsed: 1,
+          monthlyLifelineMonth: currentMonth,
+        });
+      }
+      if (db) {
+        setDoc(doc(db, 'chatMessages', systemNotice.id), cleanForFirestore(systemNotice), { merge: true }).catch(console.warn);
+      }
+
       // Automatic Cancellation Email notification to Booker
       const bookerUser = getUserByToken(booking.bookerToken);
       sendCancellationEmail({
@@ -2905,6 +3108,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         cancelledByToken: booking.companionToken,
         cancellationFeeForfeited: true,
       });
+      if (db) {
+        setDoc(doc(db, 'chatMessages', systemNotice.id), cleanForFirestore(systemNotice), { merge: true }).catch(console.warn);
+      }
 
       // Automatic Cancellation Email notification to Booker
       const bookerUser = getUserByToken(booking.bookerToken);
@@ -2980,6 +3186,16 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       'Booking Cancelled',
       `Booking ${booking.bookingToken} cancelled. Outing with ${booking.companionName} set to Cancelled.`
     );
+
+    syncBookingToFirestore({
+      ...booking,
+      status: 'Cancelled' as const,
+      cancellationReason: reason,
+      cancelledAt: cancelledTimestamp,
+    });
+    if (db) {
+      setDoc(doc(db, 'chatMessages', systemNotice.id), cleanForFirestore(systemNotice), { merge: true }).catch(console.warn);
+    }
   };
 
   const cancelBookingByBooker = (bookingId: string, reason: string, penaltyRazorpayRefId: string) => {
@@ -3011,6 +3227,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
 
     setPaymentsLedger((prev) => [penaltyLedgerEntry, ...prev]);
+    syncTransactionToFirestore(penaltyLedgerEntry);
   };
 
   // Payment Hold & Ledger - Instant Automatic Confirmation with Anti-Abuse Exact Rupee Credit Redemption
@@ -3220,17 +3437,16 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const entry = paymentsLedger.find((l) => l.id === ledgerId);
     if (!entry) return;
 
+    const updatedEntry = {
+      ...entry,
+      status: 'VERIFIED & RELEASED' as const,
+      verifiedAt: new Date().toISOString(),
+    };
+
     setPaymentsLedger((prev) =>
-      prev.map((l) =>
-        l.id === ledgerId
-          ? {
-              ...l,
-              status: 'VERIFIED & RELEASED',
-              verifiedAt: new Date().toISOString(),
-            }
-          : l
-      )
+      prev.map((l) => (l.id === ledgerId ? updatedEntry : l))
     );
+    syncTransactionToFirestore(updatedEntry);
 
     if (entry.type === '1-Month Pro Subscription') {
       subscribeCompanionPro(entry.companionToken);
@@ -3245,6 +3461,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setBookings((prev) =>
         prev.map((b) => (b.id === entry.bookingId ? { ...b, status: 'Confirmed' as const } : b))
       );
+      const b = bookings.find((x) => x.id === entry.bookingId);
+      if (b) {
+        syncBookingToFirestore({ ...b, status: 'Confirmed' as const });
+      }
 
       const systemMsg: ChatMessage = {
         id: `MSG-${Date.now()}`,
@@ -3256,6 +3476,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         isSystemNotice: true,
       };
       setChatMessages((prev) => [...prev, systemMsg]);
+      if (db) {
+        setDoc(doc(db, 'chatMessages', systemMsg.id), cleanForFirestore(systemMsg), { merge: true }).catch(console.warn);
+      }
 
       addAuditLog(
         'Payment Verified & Outing Confirmed',
@@ -3268,9 +3491,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const entry = paymentsLedger.find((l) => l.id === ledgerId);
     if (!entry) return;
 
+    const updatedEntry = { ...entry, status: 'REJECTED' as const };
     setPaymentsLedger((prev) =>
-      prev.map((l) => (l.id === ledgerId ? { ...l, status: 'REJECTED' } : l))
+      prev.map((l) => (l.id === ledgerId ? updatedEntry : l))
     );
+    syncTransactionToFirestore(updatedEntry);
 
     if (entry.type === '1-Month Pro Subscription') {
       const companionToken = entry.companionToken;
@@ -3287,6 +3512,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setUsersAndCompanions((prev) =>
         prev.map((u) => (u.userToken === companionToken ? { ...u, ...updatedFields } : u))
       );
+      const comp = usersAndCompanions.find((u) => u.userToken === companionToken) || currentUser;
+      if (comp) {
+        syncUserToFirestore({ ...comp, ...updatedFields });
+      }
       addAuditLog(
         'Pro Subscription Payment Rejected',
         `Founder rejected Razorpay ${entry.razorpayRefId} for ${companionToken}.`
@@ -3298,6 +3527,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setBookings((prev) =>
         prev.map((b) => (b.id === entry.bookingId ? { ...b, status: 'Rejected' as const } : b))
       );
+      const b = bookings.find((x) => x.id === entry.bookingId);
+      if (b) {
+        syncBookingToFirestore({ ...b, status: 'Rejected' as const });
+      }
       addAuditLog(
         'Payment Rejected & Booking Flagged',
         `Transaction ${entry.razorpayRefId} rejected. Booking flagged as unpaid.`
@@ -3310,7 +3543,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return chatMessages.filter((m) => Boolean(m && m.bookingId === bookingId));
   };
 
-  const sendChatMessage = (bookingId: string, text: string) => {
+  const sendChatMessage = async (bookingId: string, text: string) => {
     if (!text.trim() || !currentUser) return;
 
     const newMessage: ChatMessage = {
@@ -3323,10 +3556,13 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
 
     setChatMessages((prev) => [...prev, newMessage]);
+    if (db) {
+      setDoc(doc(db, 'chatMessages', newMessage.id), cleanForFirestore(newMessage), { merge: true }).catch(console.warn);
+    }
   };
 
   // Safety Reports
-  const fileSafetyReport = (reportInput: {
+  const fileSafetyReport = async (reportInput: {
     reportedUserToken: string;
     category: SafetyReport['category'];
     details: string;
@@ -3346,6 +3582,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
 
     setSafetyReports((prev) => [newReport, ...prev]);
+    if (db) {
+      setDoc(doc(db, 'safetyReports', newReport.id), cleanForFirestore(newReport), { merge: true }).catch(console.warn);
+    }
 
     addAuditLog(
       'Safety Report Filed',
@@ -3353,7 +3592,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     );
   };
 
-  const resolveReport = (reportId: string, notes: string, accountStatusChange?: AccountStatus) => {
+  const resolveReport = async (reportId: string, notes: string, accountStatusChange?: AccountStatus) => {
     setSafetyReports((prev) =>
       prev.map((r) =>
         r.id === reportId
@@ -3365,6 +3604,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
           : r
       )
     );
+
+    if (db) {
+      setDoc(doc(db, 'safetyReports', reportId), cleanForFirestore({ status: 'Resolved', adminResolutionNotes: notes }), { merge: true }).catch(console.warn);
+    }
 
     if (accountStatusChange) {
       const report = safetyReports.find((r) => r.id === reportId);
@@ -3419,6 +3662,8 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         updateCurrentUserEmail,
         verifyUserIdentity,
         adjustUserWalletCredit,
+        addUserWalletMoney,
+        suspendUser,
         submitProSubscriptionPayment,
         subscribeCompanionPro,
         isProfileModalOpen,
@@ -3484,6 +3729,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         closeSuspensionNotice,
         suspendUserForSafetyViolation,
         liftUserSuspension,
+        activeBroadcasts,
+        activeLiveBroadcast,
+        dismissLiveBroadcast,
+        sendAdminBroadcast,
       }}
     >
       {children}

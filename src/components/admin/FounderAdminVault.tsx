@@ -73,10 +73,12 @@ export const FounderAdminVault: React.FC = () => {
     platformFeedbacks,
     deleteFeedback,
     liftUserSuspension,
+    suspendUser,
     bookings,
     adjustUserWalletCredit,
     resolveBookingDisputeRefundAndBlock,
     addAuditLog,
+    sendAdminBroadcast,
   } = useMarketplace();
 
   const [activeTab, setActiveTab] = useState<AdminTab>('fees');
@@ -112,6 +114,19 @@ export const FounderAdminVault: React.FC = () => {
 
     setIsSendingPersonalOffer(true);
     try {
+      // 1. Dispatch live in real-time to Firestore notifications so it pops up live on user's device
+      await sendAdminBroadcast({
+        title: personalOfferTitle.trim(),
+        message: personalOfferMessage.trim(),
+        target: personalOfferUserToken || toEmail,
+        targetEmail: toEmail,
+        targetName: personalOfferName.trim() || 'Valued Member',
+        couponCode: personalOfferCoupon.trim() || undefined,
+        expiryDate: personalOfferExpiry.trim() || undefined,
+        senderToken: 'FOUNDER-ROOT',
+      });
+
+      // 2. Dispatch email webhook notification
       const success = await sendPersonalOffer({
         toEmail,
         userName: personalOfferName.trim() || 'Valued Member',
@@ -125,7 +140,7 @@ export const FounderAdminVault: React.FC = () => {
       if (success) {
         addAuditLog(
           'Personal Offer Dispatched',
-          `Admin sent offer "${personalOfferTitle}" to ${personalOfferName || toEmail} (${toEmail}) via Apps Script.`
+          `Admin sent offer "${personalOfferTitle}" to ${personalOfferName || toEmail} (${toEmail}) via Apps Script & Cloud Firestore.`
         );
         setPersonalOfferToast(`Personal offer successfully sent to ${toEmail}!`);
         setTimeout(() => {
@@ -133,7 +148,7 @@ export const FounderAdminVault: React.FC = () => {
           setPersonalOfferToast(null);
         }, 1500);
       } else {
-        setPersonalOfferToast('Offer dispatched. Google Apps Script acknowledged request.');
+        setPersonalOfferToast('Offer dispatched live to user and Apps Script notified.');
         setTimeout(() => {
           setIsPersonalOfferModalOpen(false);
           setPersonalOfferToast(null);
@@ -161,6 +176,17 @@ export const FounderAdminVault: React.FC = () => {
 
     setIsSendingBroadcast(true);
     try {
+      // 1. Dispatch live in real-time to Firestore notifications so all connected phones receive it instantly
+      await sendAdminBroadcast({
+        title: broadcastSubject.trim(),
+        message: broadcastMessage.trim(),
+        target: 'ALL',
+        couponCode: broadcastCoupon.trim() || undefined,
+        expiryDate: broadcastExpiry.trim() || undefined,
+        senderToken: 'FOUNDER-ROOT',
+      });
+
+      // 2. Dispatch email broadcast via Google Apps Script
       const success = await broadcastOfferToAllUsers({
         offerSubject: broadcastSubject.trim(),
         offerMessage: broadcastMessage.trim(),
@@ -172,7 +198,7 @@ export const FounderAdminVault: React.FC = () => {
       if (success) {
         addAuditLog(
           'Broadcast Offer Dispatched',
-          `Admin broadcast offer "${broadcastSubject}" to ${activeRecipients.length} registered members via Apps Script.`
+          `Admin broadcast offer "${broadcastSubject}" to all registered members live via Cloud Firestore and Apps Script.`
         );
         setBroadcastToast(`Broadcast sent to ${activeRecipients.length} registered members!`);
         setTimeout(() => {
@@ -180,7 +206,7 @@ export const FounderAdminVault: React.FC = () => {
           setBroadcastToast(null);
         }, 1500);
       } else {
-        setBroadcastToast(`Broadcast triggered for ${activeRecipients.length} users.`);
+        setBroadcastToast(`Broadcast sent live to all users via Cloud Firestore.`);
         setTimeout(() => {
           setIsBroadcastOfferModalOpen(false);
           setBroadcastToast(null);
@@ -211,6 +237,27 @@ export const FounderAdminVault: React.FC = () => {
   const [disputeBooking, setDisputeBooking] = useState<BookingRecord | null>(null);
   const [disputeReasonInput, setDisputeReasonInput] = useState<string>('Booker Non-Payment & Platform Policy Violation');
   const [disputeToast, setDisputeToast] = useState<string | null>(null);
+
+  // Manual Account Suspension / Ban Modal State (7-Day Hold vs Permanent Ban)
+  const [suspendModalUser, setSuspendModalUser] = useState<UserProfile | null>(null);
+  const [suspendType, setSuspendType] = useState<'7_DAYS' | 'PERMANENT'>('7_DAYS');
+  const [suspendReasonInput, setSuspendReasonInput] = useState<string>('Violation of 100% Commercial Public Venues Policy');
+  const [suspendToast, setSuspendToast] = useState<string | null>(null);
+
+  const handleExecuteSuspend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!suspendModalUser) return;
+    try {
+      await suspendUser(suspendModalUser.userToken, suspendType, suspendReasonInput.trim());
+      setSuspendToast(`Account ${suspendModalUser.userToken} placed on ${suspendType === '7_DAYS' ? '7-Day Safety Hold' : 'Permanent Ban'}!`);
+      setTimeout(() => {
+        setSuspendModalUser(null);
+        setSuspendToast(null);
+      }, 1200);
+    } catch (err: any) {
+      setSuspendToast(`Error applying suspension: ${err?.message || 'Check connection'}`);
+    }
+  };
 
   // Venue Local State
   const [newVenueCategoryInput, setNewVenueCategoryInput] = useState<string>('');
@@ -1877,20 +1924,6 @@ export const FounderAdminVault: React.FC = () => {
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      if (confirm()) {
-                                        permanentlyPurgeArchivedUser(u.userToken);
-                                      }
-                                    }}
-                                    className="px-2 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800 rounded text-[10px] font-bold cursor-pointer transition-colors"
-                                    title="Permanently erase record ahead of 365 days"
-                                  >
-                                    Purge Now
-                                  </button>
-                                )}
-                                {u.accountStatus === 'Deleted_Archived' && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
                                       if (confirm(`Permanently erase ${u.userToken} (${u.fullName}) and all archived records from all system databases immediately? This action cannot be reversed.`)) {
                                         permanentlyPurgeArchivedUser(u.userToken);
                                       }
@@ -1901,26 +1934,60 @@ export const FounderAdminVault: React.FC = () => {
                                     Purge Now
                                   </button>
                                 )}
-                                {u.accountStatus === 'Suspended' && (
+                                {(u.accountStatus === 'Suspended' || u.isSuspended) ? (
                                   <button
                                     type="button"
                                     onClick={() => liftUserSuspension(u.userToken)}
-                                    className="px-2 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-[11px] font-bold shadow-xs cursor-pointer"
-                                    title="Lift 7-day safety suspension"
+                                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow-xs flex items-center gap-1 cursor-pointer transition-colors"
+                                    title="Lift suspension and restore active account standing"
                                   >
-                                    Lift Hold
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    <span>Lift Ban</span>
                                   </button>
-                                )}
-                                {!(u.verificationStatus === 'ID Verified' || u.verificationStatus === 'Verified' || u.isVerified) && (
+                                ) : (
                                   <button
                                     type="button"
-                                    onClick={() => verifyUserIdentity(u.userToken)}
-                                    className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow-xs flex items-center gap-1 cursor-pointer"
-                                    title="Approve Government ID and make live in Explore"
+                                    onClick={() => {
+                                      setSuspendModalUser(u);
+                                      setSuspendType('7_DAYS');
+                                      setSuspendReasonInput('Violation of 100% Commercial Public Venues Policy');
+                                    }}
+                                    className="px-2 py-1 bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 rounded text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                                    title="Apply 7-Day Temporary Safety Hold or Permanent Ban"
                                   >
-                                    <Check className="w-3 h-3" />
-                                    <span>Approve ID ✔</span>
+                                    <AlertTriangle className="w-3 h-3 text-rose-400" />
+                                    <span>Ban / Hold</span>
                                   </button>
+                                )}
+                                {(u.verificationStatus === 'ID Verified' || u.verificationStatus === 'Verified' || u.isVerified) ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => verifyUserIdentity(u.userToken, false)}
+                                    className="px-2 py-1 bg-slate-900 hover:bg-rose-950 text-rose-300 border border-slate-700 hover:border-rose-800 rounded text-[11px] font-semibold cursor-pointer transition-colors"
+                                    title="Revoke / Reject ID verification"
+                                  >
+                                    Reject ID ✖
+                                  </button>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => verifyUserIdentity(u.userToken, true)}
+                                      className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow-xs flex items-center gap-1 cursor-pointer transition-colors"
+                                      title="Approve Government ID and make live in Explore"
+                                    >
+                                      <Check className="w-3 h-3" />
+                                      <span>Verify ✔</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => verifyUserIdentity(u.userToken, false)}
+                                      className="px-2 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800 rounded text-[11px] font-bold cursor-pointer transition-colors"
+                                      title="Reject Government ID"
+                                    >
+                                      Reject ✖
+                                    </button>
+                                  </>
                                 )}
                                 <button
                                   type="button"
@@ -3064,6 +3131,146 @@ export const FounderAdminVault: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* MODAL: 🚨 Apply 7-Day Hold or Permanent Ban */}
+      {suspendModalUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-2 sm:p-4 animate-fadeIn">
+          <div className="bg-slate-900 rounded-3xl w-full max-w-full sm:max-w-md overflow-hidden shadow-2xl border border-rose-900/60 flex flex-col text-white max-h-[90vh]">
+            <div className="bg-slate-950 px-5 py-4 flex items-center justify-between border-b border-rose-950">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-950/80 border border-rose-700/60 flex items-center justify-center text-rose-300">
+                  <ShieldAlert className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white">🚨 Account Sanction &amp; Ban Gate</h3>
+                  <p className="text-[11px] text-slate-400 font-mono">
+                    Target: {suspendModalUser.fullName} ({suspendModalUser.userToken})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSuspendModalUser(null)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleExecuteSuspend} className="p-5 space-y-4 text-xs">
+              {suspendToast && (
+                <div className="p-3 bg-rose-950 border border-rose-800 text-rose-200 rounded-xl text-xs flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>{suspendToast}</span>
+                </div>
+              )}
+
+              {/* Sanction Type Selector */}
+              <div>
+                <label className="text-xs font-bold text-slate-200 block mb-1.5">
+                  Select Sanction Severity:
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSuspendType('7_DAYS')}
+                    className={`p-3 rounded-xl border text-left cursor-pointer transition-all ${
+                      suspendType === '7_DAYS'
+                        ? 'bg-amber-950/80 border-amber-600 text-amber-200 shadow-xs'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="font-bold text-xs flex items-center gap-1.5">
+                      <span>⏳ 7-Day Hold</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Temporary suspension for safety inquiry. Auto-lifts after 7 days.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSuspendType('PERMANENT')}
+                    className={`p-3 rounded-xl border text-left cursor-pointer transition-all ${
+                      suspendType === 'PERMANENT'
+                        ? 'bg-rose-950/90 border-rose-600 text-rose-200 shadow-xs'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="font-bold text-xs flex items-center gap-1.5">
+                      <span>🚫 Permanent Ban</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Indefinite platform expulsion. Locks all account actions immediately.
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              {/* Reason Input */}
+              <div>
+                <label className="text-xs font-bold text-slate-200 block mb-1">
+                  Reason for Sanction *
+                </label>
+                <textarea
+                  rows={2}
+                  required
+                  value={suspendReasonInput}
+                  onChange={(e) => setSuspendReasonInput(e.target.value)}
+                  placeholder="State violation reason (visible on user's device lock screen)..."
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500 resize-none leading-relaxed"
+                />
+
+                {/* Quick Templates */}
+                <div className="space-y-1 mt-1.5">
+                  <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">Quick Reasons:</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      'Violation of 100% Commercial Public Venues Policy',
+                      'Private Accommodation or Hotel Proposition',
+                      'Inappropriate Conduct & Terms of Service Violation',
+                      'Payment Evasion / Repeated No-Show at Meeting Landmark',
+                    ].map((template) => (
+                      <button
+                        key={template}
+                        type="button"
+                        onClick={() => setSuspendReasonInput(template)}
+                        className="text-[10px] text-slate-400 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-slate-200 rounded px-2 py-0.5 text-left cursor-pointer transition-colors"
+                      >
+                        {template}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setSuspendModalUser(null)}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className={`px-4 py-2 rounded-xl text-xs font-bold text-white shadow-lg flex items-center gap-1.5 cursor-pointer transition-all ${
+                    suspendType === 'PERMANENT'
+                      ? 'bg-rose-600 hover:bg-rose-500 shadow-rose-950'
+                      : 'bg-amber-600 hover:bg-amber-500 shadow-amber-950'
+                  }`}
+                >
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  <span>
+                    Confirm {suspendType === 'PERMANENT' ? 'Permanent Ban' : '7-Day Hold'}
+                  </span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* MODAL: 🎁 Send Personal Offer */}
       {isPersonalOfferModalOpen && (

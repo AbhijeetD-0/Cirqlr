@@ -24,6 +24,7 @@ import { RefundPolicy } from './components/legal/RefundPolicy';
 import { AboutUsModal } from './components/common/AboutUsModal';
 import { FeedbackModal } from './components/common/FeedbackModal';
 import { SuspensionNoticeModal } from './components/common/SuspensionNoticeModal';
+import { AdminLiveBroadcastModal } from './components/common/AdminLiveBroadcastModal';
 
 const MarketplaceAppShell: React.FC = () => {
   const { 
@@ -111,6 +112,9 @@ const MarketplaceAppShell: React.FC = () => {
 
       {/* 7-Day Safety Hold & Violation Modal */}
       <SuspensionNoticeModal />
+
+      {/* Real-Time Live Admin Promotional & Broadcast Offer Modal */}
+      <AdminLiveBroadcastModal />
     </div>
   );
 };

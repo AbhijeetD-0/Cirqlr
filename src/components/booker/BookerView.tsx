@@ -79,12 +79,20 @@ export const BookerView: React.FC = () => {
       const isAccountGood = comp.accountStatus !== 'Suspended' && comp.accountStatus !== 'Deleted_Archived';
       if (!isAccountGood) return false;
 
-      // Condition b: Verification check (verified OTP signup or ID document uploaded/verified)
+      // Condition b: Verification check (must be verified and not Rejected)
+      if (comp.verificationStatus === 'Rejected') return false;
       const hasIdDocument = Boolean((comp.documentImageUrl || comp.idDocumentUrl || '').trim());
-      const isIdVerified = comp.isVerified || comp.verificationStatus === 'Verified' || comp.verificationStatus === 'ID Verified' || hasIdDocument;
+      const isIdVerified = (comp.isVerified ?? false) || comp.verificationStatus === 'Verified' || comp.verificationStatus === 'ID Verified' || hasIdDocument;
       if (!isIdVerified) return false;
 
+      // Exclude dummy or deleted profiles
+      if (['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003', 'USR-WB-7571'].includes(comp.userToken) || comp.fullName === 'Kolkata Companion') {
+        return false;
+      }
+
       const cards = getCompanionActivityCards(comp.userToken);
+      // STRICT RULE: User must ONLY appear in Public Explore after explicitly creating and publishing an Activity Card
+      if (!cards || cards.length === 0) return false;
 
       // Explicit Gender Filter (Smart Default with 100% User Override)
       if (selectedGender !== 'All' && comp.gender !== selectedGender) {

@@ -13,11 +13,13 @@ import {
   Loader2
 } from 'lucide-react';
 import { useRazorpayPayment } from '../../hooks/useRazorpayPayment';
+import { Calendar } from 'lucide-react';
 
 interface CancellationPenaltyModalProps {
   booking: BookingRecord;
   onClose: () => void;
   onCancelledSuccess: () => void;
+  onOpenReschedule?: () => void;
 }
 
 const CANCELLATION_REASONS = [
@@ -33,6 +35,7 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
   booking,
   onClose,
   onCancelledSuccess,
+  onOpenReschedule,
 }) => {
   const { cancelBookingByBooker, currentUser } = useMarketplace();
 
@@ -193,6 +196,31 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
                 className="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl p-2.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-rose-500 transition-all resize-none"
               />
             </div>
+
+            {/* Free Reschedule Alternative Option */}
+            {onOpenReschedule && (
+              <div className="p-3.5 bg-cyan-950/70 border border-cyan-700/80 rounded-xl space-y-2">
+                <div className="flex items-start gap-2.5">
+                  <Calendar className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold text-cyan-300 text-xs block">
+                      Need to Change Date or Time? Rescheduling is 100% Free!
+                    </span>
+                    <p className="text-[11px] text-cyan-100/90 mt-0.5 leading-relaxed">
+                      You can move this outing to a new date or time with zero cancellation penalties and keep your confirmed companion.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={onOpenReschedule}
+                  className="w-full py-2 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span>🗓️ Reschedule Outing Instead (100% Free)</span>
+                </button>
+              </div>
+            )}
 
             {/* Razorpay Simulation Box */}
             <div className="bg-slate-950/90 rounded-xl p-4 text-white space-y-3 border border-slate-800">

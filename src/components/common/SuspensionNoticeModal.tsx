@@ -29,7 +29,11 @@ export const SuspensionNoticeModal: React.FC = () => {
     logOutUser();
   };
 
+  const isPermanent = activeSuspensionNotice.suspensionType === 'PERMANENT';
+
   const formattedExpiry = (() => {
+    if (isPermanent) return 'Indefinite / Permanent Account Ban';
+    if (!activeSuspensionNotice.suspensionExpiryDate) return '7 Days from infraction';
     try {
       const d = new Date(activeSuspensionNotice.suspensionExpiryDate);
       return d.toLocaleString('en-IN', {
@@ -60,13 +64,13 @@ export const SuspensionNoticeModal: React.FC = () => {
                 Security &amp; Safety Enforcement
               </span>
               <h3 className="font-extrabold text-base text-white tracking-tight leading-tight">
-                Account in 7-Day Restricted Mode
+                {isPermanent ? 'Account Permanently Suspended' : 'Account in 7-Day Restricted Mode'}
               </h3>
             </div>
           </div>
 
           <span className="text-[10px] font-black uppercase bg-black/40 text-amber-300 border border-amber-400/40 px-2.5 py-1 rounded-full font-mono">
-            Safety Hold
+            {isPermanent ? 'Permanent Ban' : 'Safety Hold'}
           </span>
         </div>
 
@@ -117,12 +121,12 @@ export const SuspensionNoticeModal: React.FC = () => {
             </div>
 
             <div className="flex justify-between items-center border-b border-slate-800/80 pb-2">
-              <span className="text-slate-400">Restricted Mode Duration:</span>
-              <span className="font-bold text-rose-400">7 Consecutive Days</span>
+              <span className="text-slate-400">Suspension Type &amp; Duration:</span>
+              <span className="font-bold text-rose-400">{isPermanent ? 'Permanent Ban (Indefinite)' : '7 Consecutive Days'}</span>
             </div>
 
             <div className="flex justify-between items-center pt-0.5">
-              <span className="text-slate-400">Automated Re-activation Date:</span>
+              <span className="text-slate-400">{isPermanent ? 'Effective Status:' : 'Automated Re-activation Date:'}</span>
               <span className="font-bold text-amber-300 font-mono text-[11px]">
                 {formattedExpiry}
               </span>

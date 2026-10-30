@@ -1,4 +1,4 @@
-export type VerificationStatus = 'Verified' | 'ID Verified' | 'Unverified' | 'Pending Review' | 'Basic Contact Verified';
+export type VerificationStatus = 'Verified' | 'ID Verified' | 'Unverified' | 'Pending Review' | 'Basic Contact Verified' | 'Rejected';
 
 export type AccountStatus = 'Active' | 'Warned' | 'Suspended' | 'Blocked' | 'Deleted_Archived';
 
@@ -74,10 +74,14 @@ export interface UserProfile {
   subscriptionPaymentStatus?: string;
   publicGallery?: string[]; // Unlimited photos for companion public gallery
   referralCode?: string; // e.g. "REF-WB-1001"
+  referredByCode?: string; // e.g. "REF-WB-1002"
   totalReferrals?: number; // Total users registered with this referral code
   referralCredits?: number; // Available 5% fee discount credits (1 credit = 1 booking discount)
   isCommunityAmbassador?: boolean; // Awarded upon referring friends
-  referredByCode?: string; // Referral code used during signup
+  isSuspended?: boolean;
+  suspensionType?: '7_DAYS' | 'PERMANENT';
+  suspendedUntil?: string;
+  hasReferralWelcomeDiscount?: boolean;
   suspensionExpiryDate?: string; // ISO date when 7-day suspension lifts
   suspensionReason?: string; // Automated reason for suspension
   suspendedAt?: string; // Timestamp when suspension was triggered
@@ -283,8 +287,23 @@ export interface SuspensionNoticeData {
   userName: string;
   detectedKeyword?: string;
   prohibitedText?: string;
-  suspensionExpiryDate: string;
+  suspensionExpiryDate?: string;
   suspendedAt: string;
+  suspensionType?: '7_DAYS' | 'PERMANENT';
+  suspensionReason?: string;
+}
+
+export interface PlatformBroadcast {
+  id: string;
+  title: string;
+  message: string;
+  target: 'ALL' | string; // 'ALL' or specific userToken
+  targetEmail?: string;
+  targetName?: string;
+  couponCode?: string;
+  expiryDate?: string;
+  createdAt: string;
+  senderToken?: string;
 }
 
 

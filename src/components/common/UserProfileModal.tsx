@@ -112,11 +112,17 @@ export const UserProfileModal: React.FC = () => {
     logOutUser,
     openFeedbackModal,
     deleteUserAccountAndWithdrawConsent,
+    addUserWalletMoney,
   } = useMarketplace();
 
   // 5 Clean Navigation Tabs: 'gallery_ratings' (default) | 'edit_profile' | 'wallet_lifeline' | 'refer_earn' | 'pro'
   const [activeTab, setActiveTab] = useState<ProfileTab>('gallery_ratings');
   const [copiedReferral, setCopiedReferral] = useState<boolean>(false);
+
+  // Wallet Top-Up Add Money State
+  const [topUpAmount, setTopUpAmount] = useState<number>(250);
+  const [isAddingMoney, setIsAddingMoney] = useState<boolean>(false);
+  const [walletTopUpToast, setWalletTopUpToast] = useState<string | null>(null);
 
   // Account Deletion & Consent Withdrawal States (DPDP Act 2023)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
@@ -351,6 +357,45 @@ export const UserProfileModal: React.FC = () => {
       },
       onError: (err) => {
         console.error('[Razorpay Upgrade Error]', err);
+      },
+    });
+  };
+
+  const handleWalletTopUp = () => {
+    if (!topUpAmount || topUpAmount <= 0) return;
+    setIsAddingMoney(true);
+    setWalletTopUpToast(null);
+
+    openProCheckout({
+      amount: topUpAmount,
+      currency: 'INR',
+      name: 'Cirqlr Wallet Top-Up',
+      description: `Add ₹${topUpAmount} Booking Credit to Cirqlr Wallet`,
+      prefill: {
+        name: currentUser.fullName,
+        email: currentUser.email,
+        contact: currentUser.phoneNumber,
+      },
+      notes: {
+        userToken: currentUser.userToken,
+        type: 'WALLET_TOPUP',
+      },
+      onSuccess: async (paymentId) => {
+        setIsAddingMoney(false);
+        try {
+          await addUserWalletMoney(currentUser.userToken, topUpAmount, `Razorpay Top-Up: ${paymentId}`);
+          setWalletTopUpToast(`₹${topUpAmount} added to your wallet!`);
+          setTimeout(() => setWalletTopUpToast(null), 3500);
+        } catch {
+          setWalletTopUpToast('Failed to update balance. Please contact admin.');
+          setTimeout(() => setWalletTopUpToast(null), 3500);
+        }
+      },
+      onError: (err) => {
+        setIsAddingMoney(false);
+        console.error('[Wallet Top-Up Error]', err);
+        setWalletTopUpToast('Payment cancelled or incomplete.');
+        setTimeout(() => setWalletTopUpToast(null), 3000);
       },
     });
   };
@@ -946,6 +991,73 @@ export const UserProfileModal: React.FC = () => {
                           ? '1 emergency cancellation already used this month' 
                           : '1 penalty-free cancellation available (>3h before meetup)'}
                       </span>
+                    </div>
+                  </div>
+
+                  {/* 💰 Instant Wallet Top-Up / Add Money Panel */}
+                  <div className="bg-slate-950/90 border border-emerald-800/60 rounded-2xl p-4 sm:p-5 space-y-3.5 shadow-md">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Wallet className="w-4 h-4 text-emerald-400" />
+                        <span className="text-xs font-bold text-white">
+                          Add Money / Top Up Wallet
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-950/80 border border-emerald-800/60 px-2 py-0.5 rounded-full">
+                        Instant Razorpay Gateway
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      Add funds to your Cirqlr balance to automatically pay booking acceptance fees or cover emergency cancellation deposits with zero friction.
+                    </p>
+
+                    {walletTopUpToast && (
+                      <div className="p-2.5 bg-emerald-950/80 border border-emerald-600/80 text-emerald-200 text-xs rounded-xl flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span>{walletTopUpToast}</span>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {[100, 250, 500, 1000].map((amt) => (
+                        <button
+                          key={amt}
+                          type="button"
+                          onClick={() => setTopUpAmount(amt)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            topUpAmount === amt
+                              ? 'bg-emerald-600 border-emerald-500 text-white shadow-xs'
+                              : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-emerald-600'
+                          }`}
+                        >
+                          +₹{amt}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-1">
+                      <div className="relative flex-1">
+                        <span className="absolute left-3 top-2.5 text-xs text-slate-400 font-bold">₹</span>
+                        <input
+                          type="number"
+                          min={50}
+                          max={50000}
+                          value={topUpAmount || ''}
+                          onChange={(e) => setTopUpAmount(Math.max(0, parseInt(e.target.value) || 0))}
+                          placeholder="Custom Amount"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-7 pr-3 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleWalletTopUp}
+                        disabled={isAddingMoney || !topUpAmount || topUpAmount <= 0}
+                        className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                        <CreditCard className="w-3.5 h-3.5" />
+                        <span>{isAddingMoney ? 'Opening Razorpay...' : `Add ₹${topUpAmount || 0} to Wallet`}</span>
+                      </button>
                     </div>
                   </div>
 
