@@ -100,10 +100,10 @@ export const MyBookingsView: React.FC = () => {
   }
 
   // STRICT MULTI-USER ISOLATION:
-  // Bookings requested by current user as Booker
-  const myBookings = bookings.filter(
-    (b) => (b.bookerId || b.bookerToken) === currentUser.userToken
-  );
+  // Bookings requested by current user as Booker (Sorted Newest First)
+  const myBookings = bookings
+    .filter((b) => (b.bookerId || b.bookerToken) === currentUser.userToken)
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 
   // Saved Companions List derived from saved tokens
   const savedCompanions = savedCompanionTokens

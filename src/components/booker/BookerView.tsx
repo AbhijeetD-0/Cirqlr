@@ -19,6 +19,7 @@ import {
   Clock, 
   Users, 
   AlertCircle,
+  ShieldAlert,
   ExternalLink,
   SlidersHorizontal,
   X,
@@ -38,7 +39,8 @@ export const BookerView: React.FC = () => {
     activityCards,
     openAuthModal,
     setActiveTab,
-    openSuspensionNotice
+    openSuspensionNotice,
+    openProfileModal
   } = useMarketplace();
 
   const [selectedCity, setSelectedCity] = useState<string>('All');
@@ -49,6 +51,7 @@ export const BookerView: React.FC = () => {
   const [activeCompanionForBooking, setActiveCompanionForBooking] = useState<UserProfile | null>(null);
   const [selectedCardIdForBooking, setSelectedCardIdForBooking] = useState<string | undefined>(undefined);
   const [selectedCompanionForProfile, setSelectedCompanionForProfile] = useState<UserProfile | null>(null);
+  const [unverifiedBookerPromptOpen, setUnverifiedBookerPromptOpen] = useState<boolean>(false);
 
   const activeFilterCount =
     (selectedGender !== 'All' ? 1 : 0) +
@@ -75,15 +78,20 @@ export const BookerView: React.FC = () => {
   // + Explicit Gender filter, City filter, and Category filter!
   const verifiedLiveCompanions = useMemo(() => {
     return usersAndCompanions.filter((comp) => {
-      // Condition a: Account must be in good standing (not Suspended or Deleted_Archived)
-      const isAccountGood = comp.accountStatus !== 'Suspended' && comp.accountStatus !== 'Deleted_Archived';
-      if (!isAccountGood) return false;
+      // Condition a: Account must be in good standing (not Blocked, Suspended, or Deleted_Archived)
+      const isBlockedOrSuspended =
+        comp.accountStatus === 'Blocked' ||
+        comp.accountStatus === 'Suspended' ||
+        comp.accountStatus === 'Deleted_Archived' ||
+        Boolean(comp.isSuspended) ||
+        Boolean((comp as any).isBlocked);
+      if (isBlockedOrSuspended) return false;
 
-      // Condition b: Verification check (must be verified and not Rejected)
+      // Condition b: Verification check (Either automated ID verification OR Admin manual override)
+      // As long as isVerified === true in Firestore and NOT Rejected, user is live!
       if (comp.verificationStatus === 'Rejected') return false;
-      const hasIdDocument = Boolean((comp.documentImageUrl || comp.idDocumentUrl || '').trim());
-      const isIdVerified = (comp.isVerified ?? false) || comp.verificationStatus === 'Verified' || comp.verificationStatus === 'ID Verified' || hasIdDocument;
-      if (!isIdVerified) return false;
+      const isVerified = Boolean(comp.isVerified) && (comp.verificationStatus === 'Verified' || comp.verificationStatus === 'ID Verified');
+      if (!isVerified) return false;
 
       // Exclude dummy or deleted profiles
       if (['USR-WB-1001', 'USR-OD-2002', 'USR-WB-3003', 'USR-WB-7571'].includes(comp.userToken) || comp.fullName === 'Kolkata Companion') {
@@ -148,6 +156,12 @@ export const BookerView: React.FC = () => {
     }
     if (currentUser.accountStatus === 'Suspended') {
       openSuspensionNotice(currentUser);
+      return;
+    }
+    // Block unverified bookers from booking globally:
+    const isBookerVerified = Boolean(currentUser.isVerified) && (currentUser.verificationStatus === 'Verified' || currentUser.verificationStatus === 'ID Verified');
+    if (!isBookerVerified) {
+      setUnverifiedBookerPromptOpen(true);
       return;
     }
     if (currentUser.userToken === companion.userToken) {
@@ -631,6 +645,45 @@ export const BookerView: React.FC = () => {
             setSelectedCardIdForBooking(undefined);
           }}
         />
+      )}
+
+      {/* Unverified Booker ID Requirement Modal */}
+      {unverifiedBookerPromptOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-3xl p-6 sm:p-7 max-w-md w-full shadow-2xl space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
+              <ShieldAlert className="w-7 h-7" />
+            </div>
+            <div className="text-center space-y-2">
+              <h3 className="text-lg font-bold text-white">Government ID Verification Required</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                To guarantee safety and verified platonic companionship, all bookers must have a verified Government ID (PAN Card, Voter ID, or Driving License) before requesting an outing.
+              </p>
+            </div>
+            <div className="p-3 bg-amber-950/40 border border-amber-500/30 rounded-xl text-[11px] text-amber-200/90 leading-tight">
+              ✨ Uploading your original Government ID takes under 30 seconds with automated instant validation synced straight to the secure server.
+            </div>
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setUnverifiedBookerPromptOpen(false)}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer border border-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setUnverifiedBookerPromptOpen(false);
+                  openProfileModal('profile');
+                }}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-bold transition-all shadow-lg shadow-amber-500/20 cursor-pointer"
+              >
+                Verify ID Now
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

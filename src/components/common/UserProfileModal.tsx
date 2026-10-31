@@ -5,6 +5,7 @@ import { saveUserToSheet } from '../../services/googleSheetsService';
 import { CopyUserIdButton } from './CopyUserIdButton';
 import { compressImageFile } from '../../utils/imageCompressor';
 import { copyToClipboard } from '../../utils/clipboard';
+import { validateIdNumber, validateIdDocumentImage, EXACT_IMAGE_ERROR } from '../../utils/idValidator';
 import { 
   X, 
   Sparkles, 
@@ -151,7 +152,10 @@ export const UserProfileModal: React.FC = () => {
   const [city, setCity] = useState<UserCity>(currentUser?.city || 'Kolkata');
   const [residentialAddress, setResidentialAddress] = useState(currentUser?.residentialAddress || '');
   const [documentType, setDocumentType] = useState<AllowedDocumentType>(currentUser?.documentType || 'Voter ID Card');
-  const [documentImageUrl, setDocumentImageUrl] = useState(currentUser?.documentImageUrl || currentUser?.idDocumentUrl || '');
+  const [documentImageUrl, setDocumentImageUrl] = useState(currentUser?.idDocumentImage || currentUser?.idProofUrl || currentUser?.documentImageUrl || currentUser?.idDocumentUrl || '');
+  const [documentIdNumber, setDocumentIdNumber] = useState(currentUser?.idDocumentNumber || currentUser?.documentIdNumber || '');
+  const [docValidationError, setDocValidationError] = useState<string | null>(null);
+  const [isValidatingDoc, setIsValidatingDoc] = useState<boolean>(false);
   const [serviceAreasStr, setServiceAreasStr] = useState(
     (currentUser?.serviceAreas || []).join(', ')
   );
@@ -177,7 +181,9 @@ export const UserProfileModal: React.FC = () => {
       setCity(currentUser.city);
       setResidentialAddress(currentUser.residentialAddress || '');
       setDocumentType(currentUser.documentType || 'Voter ID Card');
-      setDocumentImageUrl(currentUser.documentImageUrl || currentUser.idDocumentUrl || '');
+      setDocumentImageUrl(currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '');
+      setDocumentIdNumber(currentUser.idDocumentNumber || currentUser.documentIdNumber || '');
+      setDocValidationError(null);
       setServiceAreasStr((currentUser.serviceAreas || []).join(', '));
       setBio(currentUser.bio);
       setLanguagesStr((currentUser.languages || []).join(', '));
@@ -189,8 +195,10 @@ export const UserProfileModal: React.FC = () => {
   if (!isProfileModalOpen || !currentUser) return null;
 
   const isPro = Boolean(currentUser.isProCompanion || currentUser.isPremiumCompanion);
-  const hasIdDoc = Boolean((documentImageUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim());
-  const isVerified = hasIdDoc && (currentUser.isVerified || currentUser.verificationStatus === 'Verified' || currentUser.verificationStatus === 'ID Verified');
+  const effectiveDocImg = (documentImageUrl || currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim();
+  const effectiveDocId = (documentIdNumber || currentUser.idDocumentNumber || currentUser.documentIdNumber || '').trim();
+  const hasIdDoc = Boolean(effectiveDocImg && effectiveDocId);
+  const isVerified = Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected' && hasIdDoc);
 
   const basePrice = platformSettings.proSubscriptionMonthlyPrice;
   const discountPercent = platformSettings.proOccasionDiscountPercent;
@@ -242,45 +250,78 @@ export const UserProfileModal: React.FC = () => {
     }
   };
 
-  // Document photo/scan upload with instant auto-verification and client-side canvas compression
+  // Document photo/scan upload with automated validation and client-side canvas compression
   const handleDocImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setDocValidationError(null);
+    setIsValidatingDoc(true);
     try {
+      // 1. Run automated image validation (checks aspect ratio, contrast/luminance variance, and rejects random selfies)
+      const validation = await validateIdDocumentImage(file);
+      if (!validation.isValid) {
+        setDocValidationError(validation.error || EXACT_IMAGE_ERROR);
+        e.target.value = '';
+        setIsValidatingDoc(false);
+        return;
+      }
+
       const compressed = await compressImageFile(file, 800, 800, 0.75);
       if (compressed) {
         setDocumentImageUrl(compressed);
-        submitAddressVerification(
-          currentUser.userToken,
-          documentType,
-          compressed,
-          residentialAddress.trim() || currentUser.residentialAddress
-        );
+        if (documentIdNumber.trim()) {
+          const numVal = validateIdNumber(documentType, documentIdNumber);
+          if (numVal.isValid) {
+            submitAddressVerification(
+              currentUser.userToken,
+              documentType,
+              compressed,
+              residentialAddress.trim() || currentUser.residentialAddress,
+              documentIdNumber.trim().toUpperCase()
+            );
+          }
+        }
         setSaveSuccess(true);
         setTimeout(() => setSaveSuccess(false), 3000);
       }
     } catch {
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         if (typeof reader.result === 'string') {
           const uploadedDataUrl = reader.result;
+          const val = await validateIdDocumentImage(uploadedDataUrl);
+          if (!val.isValid) {
+            setDocValidationError(val.error || EXACT_IMAGE_ERROR);
+            setIsValidatingDoc(false);
+            return;
+          }
           setDocumentImageUrl(uploadedDataUrl);
-          submitAddressVerification(
-            currentUser.userToken,
-            documentType,
-            uploadedDataUrl,
-            residentialAddress.trim() || currentUser.residentialAddress
-          );
+          if (documentIdNumber.trim()) {
+            const numVal = validateIdNumber(documentType, documentIdNumber);
+            if (numVal.isValid) {
+              submitAddressVerification(
+                currentUser.userToken,
+                documentType,
+                uploadedDataUrl,
+                residentialAddress.trim() || currentUser.residentialAddress,
+                documentIdNumber.trim().toUpperCase()
+              );
+            }
+          }
           setSaveSuccess(true);
           setTimeout(() => setSaveSuccess(false), 3000);
         }
       };
       reader.readAsDataURL(file);
+    } finally {
+      setIsValidatingDoc(false);
     }
   };
 
-  const handleSaveProfile = (e: React.FormEvent) => {
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    setDocValidationError(null);
+
     const parsedLanguages = languagesStr
       .split(',')
       .map((l) => l.trim())
@@ -291,8 +332,28 @@ export const UserProfileModal: React.FC = () => {
       .map((a) => a.trim())
       .filter(Boolean);
 
-    const effectiveDocImage = (documentImageUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim();
-    const isNowAutoVerified = Boolean(effectiveDocImage);
+    const effectiveDocImage = (documentImageUrl || currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim();
+    const cleanIdNum = documentIdNumber.trim().toUpperCase();
+
+    // If ID image is provided, enforce strict ID number format & image validation
+    let isNowAutoVerified = false;
+    if (effectiveDocImage) {
+      if (!cleanIdNum) {
+        setDocValidationError('Government ID Number is required when uploading document proof.');
+        return;
+      }
+      const numVal = validateIdNumber(documentType, cleanIdNum);
+      if (!numVal.isValid) {
+        setDocValidationError(numVal.error || 'Invalid ID number format.');
+        return;
+      }
+      const imgVal = await validateIdDocumentImage(effectiveDocImage);
+      if (!imgVal.isValid) {
+        setDocValidationError(imgVal.error || EXACT_IMAGE_ERROR);
+        return;
+      }
+      isNowAutoVerified = true;
+    }
 
     updateCurrentUserProfile({
       fullName: fullName.trim(),
@@ -306,18 +367,24 @@ export const UserProfileModal: React.FC = () => {
       bio: bio.trim(),
       languages: parsedLanguages.length > 0 ? parsedLanguages : currentUser.languages,
       documentType,
+      documentIdNumber: cleanIdNum || undefined,
       documentImageUrl: effectiveDocImage || undefined,
       idDocumentUrl: effectiveDocImage || undefined,
-      isVerified: isNowAutoVerified,
-      verificationStatus: isNowAutoVerified ? 'Verified' : 'Unverified',
+      idDocumentType: documentType,
+      idDocumentNumber: cleanIdNum || undefined,
+      idDocumentImage: effectiveDocImage || undefined,
+      idProofUrl: effectiveDocImage || undefined,
+      isVerified: isNowAutoVerified || Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected'),
+      verificationStatus: isNowAutoVerified || (currentUser.isVerified && currentUser.verificationStatus !== 'Rejected') ? 'Verified' : 'Unverified',
     });
 
-    if (effectiveDocImage && effectiveDocImage !== (currentUser.documentImageUrl || '')) {
+    if (effectiveDocImage && cleanIdNum) {
       submitAddressVerification(
         currentUser.userToken,
         documentType,
         effectiveDocImage,
-        residentialAddress.trim() || currentUser.residentialAddress
+        residentialAddress.trim() || currentUser.residentialAddress,
+        cleanIdNum
       );
     }
 
@@ -994,73 +1061,6 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* 💰 Instant Wallet Top-Up / Add Money Panel */}
-                  <div className="bg-slate-950/90 border border-emerald-800/60 rounded-2xl p-4 sm:p-5 space-y-3.5 shadow-md">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Wallet className="w-4 h-4 text-emerald-400" />
-                        <span className="text-xs font-bold text-white">
-                          Add Money / Top Up Wallet
-                        </span>
-                      </div>
-                      <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-950/80 border border-emerald-800/60 px-2 py-0.5 rounded-full">
-                        Instant Razorpay Gateway
-                      </span>
-                    </div>
-
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Add funds to your Cirqlr balance to automatically pay booking acceptance fees or cover emergency cancellation deposits with zero friction.
-                    </p>
-
-                    {walletTopUpToast && (
-                      <div className="p-2.5 bg-emerald-950/80 border border-emerald-600/80 text-emerald-200 text-xs rounded-xl flex items-center gap-2">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                        <span>{walletTopUpToast}</span>
-                      </div>
-                    )}
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      {[100, 250, 500, 1000].map((amt) => (
-                        <button
-                          key={amt}
-                          type="button"
-                          onClick={() => setTopUpAmount(amt)}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            topUpAmount === amt
-                              ? 'bg-emerald-600 border-emerald-500 text-white shadow-xs'
-                              : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-emerald-600'
-                          }`}
-                        >
-                          +₹{amt}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-1">
-                      <div className="relative flex-1">
-                        <span className="absolute left-3 top-2.5 text-xs text-slate-400 font-bold">₹</span>
-                        <input
-                          type="number"
-                          min={50}
-                          max={50000}
-                          value={topUpAmount || ''}
-                          onChange={(e) => setTopUpAmount(Math.max(0, parseInt(e.target.value) || 0))}
-                          placeholder="Custom Amount"
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-7 pr-3 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:border-emerald-500"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleWalletTopUp}
-                        disabled={isAddingMoney || !topUpAmount || topUpAmount <= 0}
-                        className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
-                      >
-                        <CreditCard className="w-3.5 h-3.5" />
-                        <span>{isAddingMoney ? 'Opening Razorpay...' : `Add ₹${topUpAmount || 0} to Wallet`}</span>
-                      </button>
-                    </div>
-                  </div>
-
                   {/* ------------------------------------------------------------- */}
                   {/* 📜 MY PAYMENT & WALLET TRANSACTION HISTORY                    */}
                   {/* ------------------------------------------------------------- */}
@@ -1469,28 +1469,82 @@ export const UserProfileModal: React.FC = () => {
                       </div>
 
                       <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border self-start sm:self-auto ${
-                        hasIdDoc
+                        isVerified
                           ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700/60'
                           : 'bg-amber-950/80 text-amber-300 border-amber-700/60'
                       }`}>
-                        {hasIdDoc ? 'Verified ID (Live in Explore)' : 'Unverified (ID Required)'}
+                        {isVerified ? 'Verified ID (Live in Explore)' : 'Unverified (ID Required)'}
                       </span>
                     </div>
 
-                    {/* Document Type Selector (Voter ID / Driving License / PAN Card ONLY - NO document ID number input!) */}
+                    {/* Automated Validation Error Alert */}
+                    {docValidationError && (
+                      <div className="p-3 bg-rose-950/90 border border-rose-800 rounded-xl text-rose-200 text-xs flex items-start gap-2 shadow-md animate-fadeIn">
+                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                        <span className="leading-relaxed font-semibold">{docValidationError}</span>
+                      </div>
+                    )}
+
+                    {isValidatingDoc && (
+                      <div className="p-2.5 bg-indigo-950/70 border border-indigo-800 rounded-xl text-cyan-300 text-xs flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
+                        <span>Validating document structure &amp; checking image readability...</span>
+                      </div>
+                    )}
+
+                    {/* Document Type Selector (Voter ID / Driving License / PAN Card) */}
                     <div className="space-y-1.5">
                       <label className="text-[11px] font-bold text-slate-300 block">
                         Government Document Type
                       </label>
                       <select
                         value={documentType}
-                        onChange={(e) => setDocumentType(e.target.value as AllowedDocumentType)}
+                        onChange={(e) => {
+                          setDocumentType(e.target.value as AllowedDocumentType);
+                          setDocValidationError(null);
+                        }}
                         className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-semibold focus:outline-none focus:border-cyan-500"
                       >
                         <option value="Voter ID Card">Voter ID Card</option>
                         <option value="Driving License">Driving License</option>
                         <option value="PAN Card">PAN Card</option>
                       </select>
+                    </div>
+
+                    {/* Government Document Registration Number Input */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-bold text-slate-300 block">
+                          {documentType === 'PAN Card'
+                            ? 'PAN Card Number'
+                            : documentType.includes('Voter')
+                            ? 'Voter ID (EPIC) Number'
+                            : 'Driving License Number'}
+                        </label>
+                        <span className="text-[10px] text-cyan-400 font-mono font-semibold">
+                          {documentType === 'PAN Card'
+                            ? 'Format: ABCDE1234F'
+                            : documentType.includes('Voter')
+                            ? 'Format: ABC1234567'
+                            : 'Format: WB01 20180012345'}
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        value={documentIdNumber}
+                        onChange={(e) => {
+                          setDocumentIdNumber(e.target.value.toUpperCase());
+                          setDocValidationError(null);
+                        }}
+                        placeholder={
+                          documentType === 'PAN Card'
+                            ? 'ABCDE1234F'
+                            : documentType.includes('Voter')
+                            ? 'ABC1234567'
+                            : 'WB01 20180012345'
+                        }
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono font-bold uppercase tracking-wider focus:outline-none focus:border-cyan-500 placeholder-slate-600"
+                      />
                     </div>
 
                     {/* Transparency Preview: Currently Uploaded ID Document */}

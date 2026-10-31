@@ -7,6 +7,7 @@ import { saveUserToSheet } from '../../services/googleSheetsService';
 import { CopyUserIdButton } from '../common/CopyUserIdButton';
 import { SignUpLegalReaderModal, LegalDocType } from './SignUpLegalReaderModal';
 import { compressImageFile } from '../../utils/imageCompressor';
+import { validateIdNumber, validateIdDocumentImage, EXACT_IMAGE_ERROR } from '../../utils/idValidator';
 import {
   X,
   Phone,
@@ -639,11 +640,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
-  // Step 3: ID document upload handler with client-side canvas compression
+  // Step 3: ID document upload handler with automated image validation and canvas compression
   const handleDocumentImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setStep3Error('');
     try {
+      // 1. Run automated image validation (checks aspect ratio, contrast/luminance variance, and rejects random selfies)
+      const validation = await validateIdDocumentImage(file);
+      if (!validation.isValid) {
+        setStep3Error(validation.error || EXACT_IMAGE_ERROR);
+        setDocumentImageUrl('');
+        e.target.value = '';
+        return;
+      }
+
+      // 2. Client-side canvas compression for smooth transmission
       const compressed = await compressImageFile(file, 800, 800, 0.75);
       if (compressed) {
         setDocumentImageUrl(compressed);
@@ -651,21 +663,45 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     } catch {
       // Fallback if compression fails
       const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') setDocumentImageUrl(reader.result);
+      reader.onload = async () => {
+        if (typeof reader.result === 'string') {
+          const val = await validateIdDocumentImage(reader.result);
+          if (!val.isValid) {
+            setStep3Error(val.error || EXACT_IMAGE_ERROR);
+            setDocumentImageUrl('');
+            return;
+          }
+          setDocumentImageUrl(reader.result);
+        }
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const handleStep3Continue = () => {
+  const handleStep3Continue = async () => {
     setStep3Error('');
     if (!documentType) {
-      setStep3Error('Please select a valid Document Type (Voter ID Card, Driving License, or PAN Card).');
+      setStep3Error('Please select a valid Document Type (PAN Card, Voter ID (EPIC), or Driving License).');
+      return;
+    }
+    if (!documentIdNumber.trim()) {
+      setStep3Error('Please enter your Government ID number alongside the document upload, or click "Skip for Now".');
+      return;
+    }
+    // Strict format check for PAN, Voter ID, and DL
+    const numValidation = validateIdNumber(documentType, documentIdNumber);
+    if (!numValidation.isValid) {
+      setStep3Error(numValidation.error || 'Please enter a valid format ID number.');
       return;
     }
     if (!documentImageUrl.trim()) {
       setStep3Error('Please upload a clear photo or document scan of your ID to proceed. Or click "Skip for Now" to bypass.');
+      return;
+    }
+    // Automated image validation
+    const imgValidation = await validateIdDocumentImage(documentImageUrl);
+    if (!imgValidation.isValid) {
+      setStep3Error(imgValidation.error || EXACT_IMAGE_ERROR);
       return;
     }
     setSignUpStep(4);
@@ -674,6 +710,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const handleStep3Skip = () => {
     setStep3Error('');
     setDocumentImageUrl('');
+    setDocumentIdNumber('');
     setSignUpStep(4);
   };
 
@@ -775,6 +812,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
         password,
         avatarUrl: avatarUrl || undefined,
         documentType: documentImageUrl.trim() ? documentType : undefined,
+        documentIdNumber: documentImageUrl.trim() && documentIdNumber.trim() ? documentIdNumber.trim().toUpperCase() : undefined,
         documentImageUrl: documentImageUrl || undefined,
         referralCode: referralCode.trim() || undefined,
       });
@@ -1911,11 +1949,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                       {/* Document Type Selector: STRICTLY ONLY Voter ID Card, Driving License, or PAN Card */}
                       <div className="space-y-1.5">
                         <label className="block text-[11px] font-bold text-slate-300">
-                          Document Type Selector
+                          Government Document Type
                         </label>
                         <select
                           value={documentType}
-                          onChange={(e) => setDocumentType(e.target.value as AllowedDocumentType)}
+                          onChange={(e) => {
+                            setDocumentType(e.target.value as AllowedDocumentType);
+                            setStep3Error('');
+                          }}
                           className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-cyan-500"
                         >
                           {ALLOWED_ID_TYPES.map((dt) => (
@@ -1924,6 +1965,42 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                             </option>
                           ))}
                         </select>
+                      </div>
+
+                      {/* Government ID Registration Number Input */}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-[11px] font-bold text-slate-300">
+                            {documentType === 'PAN Card'
+                              ? 'PAN Card Number'
+                              : documentType.includes('Voter')
+                              ? 'Voter ID (EPIC) Number'
+                              : 'Driving License Number'}
+                          </label>
+                          <span className="text-[10px] text-cyan-400 font-mono font-semibold">
+                            {documentType === 'PAN Card'
+                              ? 'e.g. ABCDE1234F'
+                              : documentType.includes('Voter')
+                              ? 'e.g. ABC1234567'
+                              : 'e.g. WB01 20180012345'}
+                          </span>
+                        </div>
+                        <input
+                          type="text"
+                          value={documentIdNumber}
+                          onChange={(e) => {
+                            setDocumentIdNumber(e.target.value.toUpperCase());
+                            setStep3Error('');
+                          }}
+                          placeholder={
+                            documentType === 'PAN Card'
+                              ? 'ABCDE1234F'
+                              : documentType.includes('Voter')
+                              ? 'ABC1234567'
+                              : 'WB01 20180012345'
+                          }
+                          className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-white text-xs font-mono font-bold uppercase tracking-wider focus:outline-none focus:ring-1 focus:ring-cyan-500 placeholder-slate-600"
+                        />
                       </div>
 
 

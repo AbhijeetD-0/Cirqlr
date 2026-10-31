@@ -12,13 +12,13 @@ import {
 
 /**
  * GPU-Optimized Background Layer
- * Completely static, zero-blur, zero-repaint layer designed specifically to prevent
- * GPU memory overflow and black-screen flickering during zoom on Mobile Chrome Desktop Mode.
+ * Completely static, zero-blur, zero-repaint layer.
+ * Hidden on mobile viewports (< 640px) to maximize frame rates and responsiveness on low-end phones.
  */
-export const FloatingBackgroundIcons: React.FC = () => {
+export const FloatingBackgroundIcons: React.FC = React.memo(() => {
   return (
     <div
-      className="fixed inset-0 pointer-events-none z-0 overflow-hidden select-none"
+      className="hidden sm:block fixed inset-0 pointer-events-none z-0 overflow-hidden select-none"
       aria-hidden="true"
     >
       {/* Lightweight subtle static background accents (zero blur, zero animations) */}
@@ -55,4 +55,6 @@ export const FloatingBackgroundIcons: React.FC = () => {
       </div>
     </div>
   );
-};
+});
+
+FloatingBackgroundIcons.displayName = 'FloatingBackgroundIcons';

@@ -1,8 +1,19 @@
 @import "tailwindcss";
 
-/* Hardware-accelerated smooth scrolling without GPU buffer bloat on pinch zoom */
+/* Hardware-accelerated smooth scrolling without GPU buffer bloat */
 html, body {
   -webkit-overflow-scrolling: touch;
   background-color: #020617;
+  color-scheme: dark;
+  text-rendering: optimizeLegibility;
 }
 
+/* Low-end mobile device optimization: clamp heavy backdrop blurs to prevent GPU repaints */
+@media (max-width: 640px) {
+  .backdrop-blur-xl,
+  .backdrop-blur-2xl,
+  .backdrop-blur-3xl {
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+  }
+}

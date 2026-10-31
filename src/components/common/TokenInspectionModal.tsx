@@ -45,7 +45,7 @@ export const TokenInspectionModal: React.FC = () => {
   if (!inspectedUserToken) return null;
 
   const user = getUserByToken(inspectedUserToken);
-  const isUserVerified = user ? Boolean((user.documentImageUrl || user.idDocumentUrl) && (user.isVerified || user.verificationStatus === 'Verified' || user.verificationStatus === 'ID Verified')) : false;
+  const isUserVerified = user ? Boolean((user.idDocumentImage || user.idProofUrl || user.documentImageUrl || user.idDocumentUrl) && (user.isVerified || user.verificationStatus === 'Verified' || user.verificationStatus === 'ID Verified')) : false;
   const reportsAgainstUser = getReportsForUser(inspectedUserToken);
   const reviewsAsCompanion = bookings
     .filter(
@@ -256,11 +256,11 @@ export const TokenInspectionModal: React.FC = () => {
                     Document Type & Registration ID
                   </span>
                   <div className="font-bold text-white flex items-center gap-2">
-                    <span>{user.documentType || <span className="text-amber-400 font-normal">Pending Document Submission</span>}</span>
+                    <span>{user.idDocumentType || user.documentType || <span className="text-amber-400 font-normal">Pending Document Submission</span>}</span>
                   </div>
-                  {user.documentIdNumber ? (
+                  {(user.idDocumentNumber || user.documentIdNumber) ? (
                     <div className="font-mono text-cyan-400 font-bold text-sm tracking-wide mt-0.5">
-                      {user.documentIdNumber}
+                      {user.idDocumentNumber || user.documentIdNumber}
                     </div>
                   ) : (
                     <span className="text-[11px] text-slate-500 italic block">No ID number registered</span>
@@ -284,14 +284,14 @@ export const TokenInspectionModal: React.FC = () => {
 
               {/* ID Document Image Preview */}
               <div className="pt-1">
-                {user.documentImageUrl ? (
+                {(user.idDocumentImage || user.idProofUrl || user.documentImageUrl || user.idDocumentUrl) ? (
                   <div className="flex items-center justify-between p-2.5 bg-slate-950/80 rounded-lg border border-slate-800">
                     <div className="flex items-center gap-3">
                       <img
-                        src={user.documentImageUrl}
+                        src={user.idDocumentImage || user.idProofUrl || user.documentImageUrl || user.idDocumentUrl}
                         alt="ID Document"
                         className="w-14 h-10 rounded object-cover border border-slate-700 cursor-pointer hover:opacity-90"
-                        onClick={() => setPreviewModalImage(user.documentImageUrl || null)}
+                        onClick={() => setPreviewModalImage(user.idDocumentImage || user.idProofUrl || user.documentImageUrl || user.idDocumentUrl || null)}
                       />
                       <div>
                         <span className="text-xs font-bold text-white block">Document Scan Attached</span>
@@ -300,7 +300,7 @@ export const TokenInspectionModal: React.FC = () => {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setPreviewModalImage(user.documentImageUrl || null)}
+                      onClick={() => setPreviewModalImage(user.idDocumentImage || user.idProofUrl || user.documentImageUrl || user.idDocumentUrl || null)}
                       className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
                     >
                       <Eye className="w-3.5 h-3.5" />

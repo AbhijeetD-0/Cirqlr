@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useMarketplace } from '../../context/MarketplaceContext';
 import { AccountStatus, BookingRecord, UserProfile } from '../../types/marketplace';
 import { computeLiveBookingFee } from '../../utils/feeCalculator';
@@ -225,6 +225,16 @@ export const FounderAdminVault: React.FC = () => {
   const [subPrice, setSubPrice] = useState<number>(platformSettings.proSubscriptionMonthlyPrice);
   const [discountPercent, setDiscountPercent] = useState<number>(platformSettings.proOccasionDiscountPercent);
   const [feeSavedToast, setFeeSavedToast] = useState<boolean>(false);
+
+  useEffect(() => {
+    setBaseFee(platformSettings.baseAcceptanceFeePercent);
+    setSubPrice(platformSettings.proSubscriptionMonthlyPrice);
+    setDiscountPercent(platformSettings.proOccasionDiscountPercent);
+  }, [
+    platformSettings.baseAcceptanceFeePercent,
+    platformSettings.proSubscriptionMonthlyPrice,
+    platformSettings.proOccasionDiscountPercent,
+  ]);
 
   // Manual Wallet Adjustment Modal State
   const [walletAdjustUser, setWalletAdjustUser] = useState<UserProfile | null>(null);
@@ -1959,36 +1969,33 @@ export const FounderAdminVault: React.FC = () => {
                                     <span>Ban / Hold</span>
                                   </button>
                                 )}
-                                {(u.verificationStatus === 'ID Verified' || u.verificationStatus === 'Verified' || u.isVerified) ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => verifyUserIdentity(u.userToken, false)}
-                                    className="px-2 py-1 bg-slate-900 hover:bg-rose-950 text-rose-300 border border-slate-700 hover:border-rose-800 rounded text-[11px] font-semibold cursor-pointer transition-colors"
-                                    title="Revoke / Reject ID verification"
-                                  >
-                                    Reject ID ✖
-                                  </button>
-                                ) : (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => verifyUserIdentity(u.userToken, true)}
-                                      className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow-xs flex items-center gap-1 cursor-pointer transition-colors"
-                                      title="Approve Government ID and make live in Explore"
-                                    >
-                                      <Check className="w-3 h-3" />
-                                      <span>Verify ✔</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => verifyUserIdentity(u.userToken, false)}
-                                      className="px-2 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800 rounded text-[11px] font-bold cursor-pointer transition-colors"
-                                      title="Reject Government ID"
-                                    >
-                                      Reject ✖
-                                    </button>
-                                  </>
-                                )}
+                                 {/* Dual Admin Override Action Buttons on Every User Row */}
+                                <button
+                                  type="button"
+                                  onClick={() => verifyUserIdentity(u.userToken, true)}
+                                  className={`px-2 py-1 rounded text-[11px] font-bold shadow-xs flex items-center gap-1 transition-colors cursor-pointer ${
+                                    (u.isVerified && (u.verificationStatus === 'Verified' || u.verificationStatus === 'ID Verified'))
+                                      ? 'bg-emerald-600 text-white hover:bg-emerald-500'
+                                      : 'bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/80'
+                                  }`}
+                                  title="Approve / Verify ID in Firestore (Instant approval for testing, with or without uploaded ID)"
+                                >
+                                  <Check className="w-3 h-3" />
+                                  <span>{(u.isVerified && (u.verificationStatus === 'Verified' || u.verificationStatus === 'ID Verified')) ? 'Verified ✔' : 'Approve ID'}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => verifyUserIdentity(u.userToken, false)}
+                                  className={`px-2 py-1 rounded text-[11px] font-bold shadow-xs flex items-center gap-1 transition-colors cursor-pointer ${
+                                    u.verificationStatus === 'Rejected'
+                                      ? 'bg-rose-600 text-white hover:bg-rose-500'
+                                      : 'bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800/80'
+                                  }`}
+                                  title="Reject / Revoke ID in Firestore (Hides cards and locks booking)"
+                                >
+                                  <X className="w-3 h-3" />
+                                  <span>{u.verificationStatus === 'Rejected' ? 'Rejected ✖' : 'Reject ID'}</span>
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -2110,10 +2117,10 @@ export const FounderAdminVault: React.FC = () => {
                                         <div className="flex items-start justify-between gap-3">
                                           <div>
                                             <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                                              <span>{u.documentType || 'Pending ID Submission'}</span>
-                                              {u.documentIdNumber && (
+                                              <span>{u.idDocumentType || u.documentType || 'Pending ID Submission'}</span>
+                                              {(u.idDocumentNumber || u.documentIdNumber) && (
                                                 <span className="font-mono text-cyan-400 font-bold bg-slate-950 px-1.5 py-0.2 rounded border border-slate-800 text-[11px]">
-                                                  {u.documentIdNumber}
+                                                  {u.idDocumentNumber || u.documentIdNumber}
                                                 </span>
                                               )}
                                             </div>
@@ -2124,14 +2131,14 @@ export const FounderAdminVault: React.FC = () => {
                                           </div>
 
                                           {/* View Uploaded ID thumbnail / action */}
-                                          {(u.documentImageUrl || u.idDocumentUrl) ? (
+                                          {(u.idDocumentImage || u.idProofUrl || u.documentImageUrl || u.idDocumentUrl) ? (
                                             <button
                                               type="button"
                                               onClick={() => setInspectedUserToken(u.userToken)}
                                               className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-950/80 border border-indigo-800 text-indigo-300 hover:bg-indigo-900 flex items-center gap-1.5 cursor-pointer shadow-xs shrink-0"
                                             >
                                               <img
-                                                src={u.documentImageUrl || u.idDocumentUrl}
+                                                src={u.idDocumentImage || u.idProofUrl || u.documentImageUrl || u.idDocumentUrl}
                                                 alt="ID"
                                                 className="w-5 h-4 object-cover rounded"
                                               />
@@ -2145,20 +2152,38 @@ export const FounderAdminVault: React.FC = () => {
                                         </div>
                                       </div>
 
-                                      <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
                                         <span>
-                                          Platform Escrow: <strong className="text-slate-300">{(u.verificationStatus === 'ID Verified' || u.verificationStatus === 'Verified' || u.isVerified) ? 'Government ID Verified' : 'Awaiting Document Submission'}</strong>
+                                          Platform Escrow: <strong className="text-slate-300">{(u.verificationStatus === 'ID Verified' || u.verificationStatus === 'Verified' || u.isVerified) ? 'Government ID Verified' : (u.verificationStatus === 'Rejected' ? 'Rejected' : 'Awaiting Document Submission')}</strong>
                                         </span>
-                                        {!(u.verificationStatus === 'ID Verified' || u.verificationStatus === 'Verified' || u.isVerified) && (
+                                        <div className="flex items-center gap-1.5 self-start sm:self-auto">
                                           <button
                                             type="button"
-                                            onClick={() => verifyUserIdentity(u.userToken)}
-                                            className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                                            onClick={() => verifyUserIdentity(u.userToken, true)}
+                                            className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-colors ${
+                                              (u.isVerified && (u.verificationStatus === 'Verified' || u.verificationStatus === 'ID Verified'))
+                                                ? 'bg-emerald-600 text-white hover:bg-emerald-500'
+                                                : 'bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800'
+                                            }`}
+                                            title="Approve / Verify ID in Firestore (Works with or without uploaded ID scan)"
                                           >
                                             <Check className="w-3 h-3" />
-                                            <span>Approve ID ✔</span>
+                                            <span>{(u.isVerified && (u.verificationStatus === 'Verified' || u.verificationStatus === 'ID Verified')) ? 'Verified ✔' : 'Approve ID'}</span>
                                           </button>
-                                        )}
+                                          <button
+                                            type="button"
+                                            onClick={() => verifyUserIdentity(u.userToken, false)}
+                                            className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-colors ${
+                                              u.verificationStatus === 'Rejected'
+                                                ? 'bg-rose-600 text-white hover:bg-rose-500'
+                                                : 'bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800'
+                                            }`}
+                                            title="Reject / Revoke ID in Firestore"
+                                          >
+                                            <X className="w-3 h-3" />
+                                            <span>{u.verificationStatus === 'Rejected' ? 'Rejected ✖' : 'Reject ID'}</span>
+                                          </button>
+                                        </div>
                                       </div>
                                     </div>
 

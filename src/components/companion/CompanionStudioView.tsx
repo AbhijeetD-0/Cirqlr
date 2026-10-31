@@ -88,14 +88,24 @@ export const CompanionStudioView: React.FC = () => {
   const cardsCount = myCards.length;
 
   // STRICT MULTI-USER ISOLATION:
-  // Incoming bookings where current user is the target Companion
-  const myCompanionBookings = bookings.filter(
-    (b) => (b.companionId || b.companionToken) === currentUser.userToken
-  );
+  // Incoming bookings where current user is the target Companion (Sorted Newest First)
+  const myCompanionBookings = bookings
+    .filter((b) => (b.companionId || b.companionToken) === currentUser.userToken)
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+  const isVerifiedCompanion = Boolean(currentUser.isVerified) && (currentUser.verificationStatus === 'Verified' || currentUser.verificationStatus === 'ID Verified');
 
   const handleCreateCardClick = () => {
-    if (currentUser.accountStatus === 'Suspended') {
+    if (currentUser.accountStatus === 'Blocked' || (currentUser as any).isBlocked) {
+      openSuspensionNotice(currentUser, 'Permanent Block', 'Account access has been permanently revoked by platform security.');
+      return;
+    }
+    if (currentUser.accountStatus === 'Suspended' || currentUser.isSuspended) {
       openSuspensionNotice(currentUser);
+      return;
+    }
+    if (!isVerifiedCompanion) {
+      openProfileModal('profile');
       return;
     }
     // Strictly block 4th card creation if on Free Tier
@@ -108,7 +118,11 @@ export const CompanionStudioView: React.FC = () => {
   };
 
   const handleEditCardClick = (card: ActivityPackageCard) => {
-    if (currentUser.accountStatus === 'Suspended') {
+    if (currentUser.accountStatus === 'Blocked' || (currentUser as any).isBlocked) {
+      openSuspensionNotice(currentUser, 'Permanent Block', 'Account access has been permanently revoked by platform security.');
+      return;
+    }
+    if (currentUser.accountStatus === 'Suspended' || currentUser.isSuspended) {
       openSuspensionNotice(currentUser);
       return;
     }
@@ -128,8 +142,6 @@ export const CompanionStudioView: React.FC = () => {
       return dateStr;
     }
   };
-
-  const hasIdDoc = Boolean((currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim());
 
   return (
     <div className="space-y-8 animate-fadeIn">
@@ -177,12 +189,26 @@ export const CompanionStudioView: React.FC = () => {
                 View Safety Hold Details
               </button>
             </div>
-          ) : !hasIdDoc ? (
+          ) : (currentUser.accountStatus === 'Blocked' || (currentUser as any).isBlocked) ? (
+            <div className="mt-3 p-3.5 bg-rose-950/90 border border-rose-700 rounded-xl text-xs text-rose-200 flex items-center justify-between gap-3 shadow-md">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span><strong>Account Permanently Blocked:</strong> Platform security revoked account access.</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => openSuspensionNotice(currentUser, 'Permanent Block', 'Account access has been permanently revoked by platform security.')}
+                className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-xs"
+              >
+                View Notice
+              </button>
+            </div>
+          ) : !isVerifiedCompanion ? (
             <div className="mt-3 p-3 bg-amber-950/80 border border-amber-600/70 rounded-xl text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>
-                  <strong>Government ID Required:</strong> Upload your ID (Voter ID, Driving License, or PAN Card) in Profile Settings for instant automated verification.
+                  <strong>Government ID Verification Required:</strong> Upload a photo of your original PAN Card, Voter ID, or Driving License in Profile Settings for instant automated verification so your activity cards can appear in Public Explore.
                 </span>
               </div>
               <button
@@ -190,14 +216,14 @@ export const CompanionStudioView: React.FC = () => {
                 onClick={() => openProfileModal('profile')}
                 className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs transition-all shrink-0 self-start sm:self-auto cursor-pointer"
               >
-                Upload ID in Profile →
+                Upload &amp; Verify ID →
               </button>
             </div>
           ) : myCards.length === 0 ? (
             <div className="mt-3 p-3 bg-indigo-900/60 border border-indigo-500/60 rounded-xl text-xs text-indigo-200 flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-indigo-300 shrink-0" />
               <span>
-                <strong>ID Auto-Verified (Ready to Go Live):</strong> Your government ID is verified! Create at least 1 Activity Package Card below to make your profile live in public Explore.
+                <strong>Government ID Verified:</strong> Your account is verified! Create at least 1 Activity Package Card below to make your profile live in public Explore.
               </span>
             </div>
           ) : (

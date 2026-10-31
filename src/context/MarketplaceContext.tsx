@@ -300,7 +300,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // Auto-Verification & Safety Sanitizer
   const sanitizeUserVerification = (user: UserProfile): UserProfile => {
-    let docUrl = (user.documentImageUrl || user.idDocumentUrl || '').trim();
+    let docUrl = (user.idDocumentImage || user.idProofUrl || user.documentImageUrl || user.idDocumentUrl || '').trim();
     // Protect against legacy oversized base64 data URLs in local storage (>30KB)
     if (docUrl.startsWith('data:image/') && docUrl.length > 30000) {
       docUrl = 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=600&q=80';
@@ -340,8 +340,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const isRejected = user.verificationStatus === 'Rejected';
     const isVerified = isRejected 
       ? false 
-      : (user.isVerified !== undefined ? Boolean(user.isVerified) : (user.verificationStatus === 'Verified' || user.verificationStatus === 'ID Verified' || hasIdDoc));
-    const verificationStatus: VerificationStatus = isRejected ? 'Rejected' : (user.verificationStatus || (isVerified ? 'Verified' : 'Unverified'));
+      : (user.isVerified !== undefined ? Boolean(user.isVerified) : (user.verificationStatus === 'Verified' || user.verificationStatus === 'ID Verified'));
+    const verificationStatus: VerificationStatus = isRejected 
+      ? 'Rejected' 
+      : (user.verificationStatus || (isVerified ? 'Verified' : 'Unverified'));
 
     const isSuspended = user.isSuspended !== undefined ? Boolean(user.isSuspended) : (currentAccountStatus === 'Suspended');
 
@@ -361,6 +363,12 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       suspensionReason,
       suspendedAt,
       prohibitedVenueAttempt,
+      documentType: user.documentType || (user.idDocumentType as AllowedDocumentType) || undefined,
+      documentIdNumber: user.idDocumentNumber || user.documentIdNumber || undefined,
+      idDocumentType: user.idDocumentType || user.documentType || undefined,
+      idDocumentNumber: user.idDocumentNumber || user.documentIdNumber || undefined,
+      idDocumentImage: docUrl || undefined,
+      idProofUrl: docUrl || undefined,
       documentImageUrl: docUrl || user.documentImageUrl || undefined,
       idDocumentUrl: docUrl || user.idDocumentUrl || undefined,
       isVerified,
@@ -456,7 +464,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
     );
 
-    // 2. Real-time Bookings Listener
+    // 2. Real-time Bookings Listener (Sorted Newest First)
     const unsubBookings = onSnapshot(
       collection(db, 'bookings'),
       (snapshot) => {
@@ -468,6 +476,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
             remoteBookings.push({ ...data, id: bookingId });
           }
         });
+        remoteBookings.sort(
+          (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+        );
         setBookings(remoteBookings);
       },
       (error) => {
@@ -619,6 +630,20 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
     );
 
+    // 10. Real-time Admin Fee Rules & Platform Settings Listener
+    const unsubSettings = onSnapshot(
+      doc(db, 'settings', 'marketplaceRules'),
+      (snap) => {
+        if (snap.exists()) {
+          const remoteSettings = snap.data() as Partial<PlatformSettings>;
+          setPlatformSettings((prev) => ({ ...prev, ...remoteSettings }));
+        }
+      },
+      (error) => {
+        console.warn('[Firestore] settings snapshot sync note:', error.message);
+      }
+    );
+
     return () => {
       unsubUsers();
       unsubBookings();
@@ -629,6 +654,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       unsubFeedback();
       unsubAudit();
       unsubBroadcasts();
+      unsubSettings();
     };
   }, []);
 
@@ -1308,14 +1334,15 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const user = usersAndCompanions.find((u) => u.userToken === userToken);
     if (!user) return { success: false };
 
-    const effectiveDocImage = (documentImageUrl || user.documentImageUrl || user.idDocumentUrl || '').trim();
-    const isNowVerified = Boolean(effectiveDocImage);
+    const effectiveDocImage = (documentImageUrl || user.documentImageUrl || user.idDocumentUrl || user.idDocumentImage || user.idProofUrl || '').trim();
+    const cleanIdNumber = (documentIdNumber || user.documentIdNumber || user.idDocumentNumber || '').trim();
+    const isNowVerified = Boolean(effectiveDocImage && cleanIdNumber);
     const nowIso = new Date().toISOString();
 
     const newRecord: IdVerificationRecord = {
       id: `VERIF-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       documentType,
-      idNumber: documentIdNumber || user.documentIdNumber,
+      idNumber: cleanIdNumber || undefined,
       documentImageUrl: effectiveDocImage || undefined,
       residentialAddress: residentialAddress || user.residentialAddress || '',
       submittedAt: nowIso,
@@ -1328,9 +1355,13 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const updatedUser: UserProfile = {
       ...user,
       documentType,
-      documentIdNumber: documentIdNumber || user.documentIdNumber,
+      documentIdNumber: cleanIdNumber || undefined,
       documentImageUrl: effectiveDocImage || undefined,
       idDocumentUrl: effectiveDocImage || undefined,
+      idDocumentType: documentType,
+      idDocumentNumber: cleanIdNumber || undefined,
+      idDocumentImage: effectiveDocImage || undefined,
+      idProofUrl: effectiveDocImage || undefined,
       residentialAddress: residentialAddress || user.residentialAddress,
       idSubmittedAt: nowIso,
       verificationHistory: updatedHistory,
@@ -1411,11 +1442,12 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const defaultAvatar = avatarPool[Math.floor(Math.random() * avatarPool.length)];
     const chosenAvatar = input.avatarUrl && input.avatarUrl.trim() !== '' ? input.avatarUrl.trim() : defaultAvatar;
 
-    // Instant Auto-Verification: All successful 21+ OTP registered users are Verified
+    // Instant Auto-Verification only if document image, type, and ID number were uploaded (not skipped)
     const docImg = (input.documentImageUrl || '').trim();
-    const hasDoc = Boolean(docImg);
-    const isVerified = true;
-    const verificationStatus: VerificationStatus = 'Verified';
+    const docIdNum = (input.documentIdNumber || '').trim();
+    const hasDoc = Boolean(docImg && input.documentType && docIdNum);
+    const isVerified = hasDoc;
+    const verificationStatus: VerificationStatus = hasDoc ? 'Verified' : 'Unverified';
 
     // Build initial verification history if document uploaded at signup
     const nowIso = new Date().toISOString();
@@ -1424,7 +1456,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       initialHistory.push({
         id: `VERIF-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         documentType: input.documentType,
-        idNumber: input.documentIdNumber,
+        idNumber: docIdNum,
         documentImageUrl: docImg,
         residentialAddress: input.residentialAddress || '',
         submittedAt: nowIso,
@@ -1487,9 +1519,13 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       password: input.password || undefined,
       residentialAddress: input.residentialAddress?.trim() || undefined,
       documentType: input.documentType,
-      documentIdNumber: input.documentIdNumber,
+      documentIdNumber: docIdNum || undefined,
       documentImageUrl: docImg || undefined,
       idDocumentUrl: docImg || undefined,
+      idDocumentType: input.documentType,
+      idDocumentNumber: docIdNum || undefined,
+      idDocumentImage: docImg || undefined,
+      idProofUrl: docImg || undefined,
       idSubmittedAt: hasDoc ? nowIso : undefined,
       verificationHistory: initialHistory,
       verificationStatus,
@@ -1676,13 +1712,22 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         'Platform Settings Updated',
         `Parameters modified: ${Object.keys(newSettings).join(', ')}. ${reason ? `Reason: ${reason}` : ''}`
       );
+      if (db) {
+        setDoc(doc(db, 'settings', 'marketplaceRules'), cleanForFirestore(updated), { merge: true }).catch(console.warn);
+      }
       return updated;
     });
   };
 
   const updateAdminMasterPasskey = (newPasskey: string): boolean => {
     if (!newPasskey || newPasskey.trim().length < 6) return false;
-    setPlatformSettings((prev) => ({ ...prev, adminMasterPasskey: newPasskey.trim() }));
+    setPlatformSettings((prev) => {
+      const updated = { ...prev, adminMasterPasskey: newPasskey.trim() };
+      if (db) {
+        setDoc(doc(db, 'settings', 'marketplaceRules'), cleanForFirestore(updated), { merge: true }).catch(console.warn);
+      }
+      return updated;
+    });
     addAuditLog('Master Passkey Rotated', 'Root Founder master passkey updated successfully.');
     return true;
   };
@@ -1702,6 +1747,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const resetSettingsToDefault = () => {
     setPlatformSettings(DEFAULT_PLATFORM_SETTINGS);
     addAuditLog('Platform Settings Reset', 'Reverted fee and rules matrix to factory defaults.');
+    if (db) {
+      setDoc(doc(db, 'settings', 'marketplaceRules'), cleanForFirestore(DEFAULT_PLATFORM_SETTINGS), { merge: true }).catch(console.warn);
+    }
   };
 
   // Users Directory & Profile Management
@@ -2062,11 +2110,38 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     );
   };
 
-  // Activity Cards Management
-  const getCompanionActivityCards = (companionToken: string): ActivityPackageCard[] => {
-    if (!companionToken) return [];
-    const cleanToken = companionToken.trim().toUpperCase();
-    return activityCards.filter((c) => (c.companionToken || '').trim().toUpperCase() === cleanToken);
+  // Activity Cards Management - Multi-format reliable owner matching
+  const getCompanionActivityCards = (companionTokenOrId: string): ActivityPackageCard[] => {
+    if (!companionTokenOrId) return [];
+    const searchTarget = companionTokenOrId.trim().toUpperCase();
+    const targetUser = usersAndCompanions.find(
+      (u) =>
+        (u.userToken || '').toUpperCase() === searchTarget ||
+        ((u as any).id || '').toUpperCase() === searchTarget
+    ) || (currentUser && ((currentUser.userToken || '').toUpperCase() === searchTarget || ((currentUser as any).id || '').toUpperCase() === searchTarget) ? currentUser : undefined);
+
+    const matchSet = new Set<string>();
+    matchSet.add(searchTarget);
+    if (targetUser) {
+      if (targetUser.userToken) matchSet.add(targetUser.userToken.trim().toUpperCase());
+      if ((targetUser as any).id) matchSet.add(String((targetUser as any).id).trim().toUpperCase());
+      if (targetUser.fullName) matchSet.add(targetUser.fullName.trim().toLowerCase());
+    }
+
+    return activityCards.filter((c: any) => {
+      const cardCompToken = (c.companionToken || '').trim().toUpperCase();
+      const cardCompId = (c.companionId || '').trim().toUpperCase();
+      const cardUserId = (c.userId || '').trim().toUpperCase();
+      const cardUserToken = (c.userToken || '').trim().toUpperCase();
+      const cardCompName = (c.companionName || '').trim().toLowerCase();
+
+      if (cardCompToken && matchSet.has(cardCompToken)) return true;
+      if (cardCompId && matchSet.has(cardCompId)) return true;
+      if (cardUserId && matchSet.has(cardUserId)) return true;
+      if (cardUserToken && matchSet.has(cardUserToken)) return true;
+      if (targetUser?.fullName && cardCompName && cardCompName === targetUser.fullName.trim().toLowerCase()) return true;
+      return false;
+    });
   };
 
   const createActivityCard = (
@@ -2077,8 +2152,14 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const companionToken = card.companionToken || currentUser.userToken;
     const authorUser = getUserByToken(companionToken) || currentUser;
 
+    // Check if user is permanently blocked
+    if (authorUser.accountStatus === 'Blocked' || (authorUser as any).isBlocked) {
+      openSuspensionNotice(authorUser, 'Permanent Block', 'Account access has been permanently revoked by platform security.');
+      return { success: false };
+    }
+
     // Check if user is currently in 7-day restricted mode
-    if (authorUser.accountStatus === 'Suspended') {
+    if (authorUser.accountStatus === 'Suspended' || authorUser.isSuspended) {
       openSuspensionNotice(authorUser);
       return { success: false };
     }
@@ -2104,6 +2185,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const newCard: ActivityPackageCard = {
       ...card,
       companionToken,
+      companionId: (authorUser as any).id || companionToken,
+      userId: companionToken,
+      userToken: companionToken,
+      companionName: authorUser.fullName,
       id: `ACT-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       createdAt: new Date().toISOString(),
     };
@@ -2119,7 +2204,12 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const updateActivityCard = (id: string, updates: Partial<ActivityPackageCard>) => {
-    if (currentUser?.accountStatus === 'Suspended') {
+    if (!currentUser) return;
+    if (currentUser.accountStatus === 'Blocked' || (currentUser as any).isBlocked) {
+      openSuspensionNotice(currentUser, 'Permanent Block', 'Account access has been permanently revoked by platform security.');
+      return;
+    }
+    if (currentUser.accountStatus === 'Suspended' || currentUser.isSuspended) {
       openSuspensionNotice(currentUser);
       return;
     }
@@ -2231,7 +2321,12 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       throw new Error('Must be logged in to request an outing');
     }
 
-    if (currentUser.accountStatus === 'Suspended') {
+    if (currentUser.accountStatus === 'Blocked' || (currentUser as any).isBlocked) {
+      openSuspensionNotice(currentUser, 'Permanent Block', 'Account access has been permanently revoked by platform security.');
+      throw new Error('Account Blocked: You cannot submit outing requests because your account has been permanently blocked.');
+    }
+
+    if (currentUser.accountStatus === 'Suspended' || currentUser.isSuspended) {
       openSuspensionNotice(currentUser);
       throw new Error('Account Suspended: You cannot submit outing requests while your 7-day safety hold is active.');
     }
@@ -3289,39 +3384,65 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         bookingId: booking.id,
       };
 
+      const existingComp = getUserByToken(compToken);
+      const currentCredits = existingComp?.cancellationCreditBalance || 0;
+      const updatedBal = Math.max(0, currentCredits - creditUsed);
+      const updatedHistory = [debitTxn, ...(existingComp?.walletHistory || [])];
+
       setUsersAndCompanions((prev) => {
-        const next = prev.map((u) => {
+        return prev.map((u) => {
           if (u.userToken === compToken) {
-            const currentCredits = u.cancellationCreditBalance || 0;
-            const updatedBal = Math.max(0, currentCredits - creditUsed);
-            const history = [debitTxn, ...(u.walletHistory || [])];
             return {
               ...u,
               cancellationCreditBalance: updatedBal,
-              walletHistory: history,
+              walletHistory: updatedHistory,
             };
           }
           return u;
         });
-        safeSetItem('sangha_v4_users', JSON.stringify(next));
-        return next;
       });
 
       if (currentUser?.userToken === compToken) {
         setCurrentUser((prev) => {
           if (!prev) return null;
-          const currentCredits = prev.cancellationCreditBalance || 0;
-          const updatedBal = Math.max(0, currentCredits - creditUsed);
-          const history = [debitTxn, ...(prev.walletHistory || [])];
-          const updated = {
+          return {
             ...prev,
             cancellationCreditBalance: updatedBal,
-            walletHistory: history,
+            walletHistory: updatedHistory,
           };
-          safeSetItem('sangha_v4_current_user', JSON.stringify(updated));
-          return updated;
         });
       }
+
+      if (db && compToken) {
+        setDoc(doc(db, 'users', compToken), cleanForFirestore({
+          cancellationCreditBalance: updatedBal,
+          walletHistory: updatedHistory,
+        }), { merge: true }).catch(console.warn);
+
+        setDoc(doc(db, 'wallets', compToken), cleanForFirestore({
+          userToken: compToken,
+          userName: existingComp?.fullName || booking.companionName,
+          cancellationCreditBalance: updatedBal,
+          walletHistory: updatedHistory,
+          updatedAt: confirmedIso,
+        }), { merge: true }).catch(console.warn);
+
+        setDoc(doc(db, 'transactions', wltDebitId), cleanForFirestore({
+          id: wltDebitId,
+          paymentReferenceId: wltDebitId,
+          type: 'Wallet Credit Redeemed',
+          companionToken: compToken,
+          companionName: booking.companionName,
+          feeAmount: creditUsed,
+          amount: creditUsed,
+          bookingId: booking.id,
+          bookingToken: booking.bookingToken,
+          status: 'VERIFIED & RELEASED',
+          timestamp: confirmedIso,
+          details: `Redeemed for Booking Acceptance Fee (${booking.bookingToken})`,
+        }), { merge: true }).catch(console.warn);
+      }
+
       addAuditLog(
         'Cancellation Fee Credit Redeemed',
         `Companion ${booking.companionName} (${compToken}) redeemed ₹${creditUsed} fee credit for Booking ${booking.bookingToken}. Net Gateway Paid: ₹${netPaidViaGateway}.`
@@ -3545,6 +3666,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const sendChatMessage = async (bookingId: string, text: string) => {
     if (!text.trim() || !currentUser) return;
+
+    if (currentUser.accountStatus === 'Blocked' || (currentUser as any).isBlocked) {
+      openSuspensionNotice(currentUser, 'Permanent Block', 'Account access has been permanently revoked by platform security.');
+      return;
+    }
 
     const newMessage: ChatMessage = {
       id: `MSG-${Date.now()}-${Math.floor(Math.random() * 1000)}`,

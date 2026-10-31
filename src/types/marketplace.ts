@@ -7,6 +7,10 @@ export type UserCity = 'Kolkata' | 'Siliguri' | 'Durgapur' | 'Bhubaneswar' | 'Cu
 export interface ActivityPackageCard {
   id: string;
   companionToken: string;
+  companionId?: string;
+  userId?: string;
+  userToken?: string;
+  companionName?: string;
   title: string;
   venueCategory: string;
   shortDescription: string;
@@ -43,9 +47,13 @@ export interface UserProfile {
   password?: string; // Account login password
   residentialAddress?: string; // Full residential address
   documentType?: AllowedDocumentType; // Verified government ID document type
-  documentIdNumber?: string; // ID document registration number (optional/deprecated)
+  documentIdNumber?: string; // ID document registration number
   documentImageUrl?: string; // Uploaded ID document preview URL
   idDocumentUrl?: string; // Alias for uploaded ID document URL
+  idDocumentType?: AllowedDocumentType | string; // Canonical document type
+  idDocumentNumber?: string; // Canonical ID registration number
+  idDocumentImage?: string; // Canonical uploaded document image
+  idProofUrl?: string; // Canonical ID proof URL
   idSubmittedAt?: string; // Timestamp of latest ID submission
   verificationHistory?: IdVerificationRecord[]; // Audit trail of all submitted IDs for fraud prevention
   verificationStatus: VerificationStatus;

@@ -54,7 +54,8 @@ export const BookingRequestModal: React.FC<BookingRequestModalProps> = ({
     bookings,
     currentUser,
     suspendUserForSafetyViolation,
-    openSuspensionNotice
+    openSuspensionNotice,
+    openProfileModal
   } = useMarketplace();
 
   const companionCards = getCompanionActivityCards(companion.userToken);
@@ -123,6 +124,13 @@ export const BookingRequestModal: React.FC<BookingRequestModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateForm() || !currentUser) return;
+
+    // Check if Booker has verified Government ID
+    const isBookerVerified = Boolean(currentUser.isVerified) && (currentUser.verificationStatus === 'Verified' || currentUser.verificationStatus === 'ID Verified');
+    if (!isBookerVerified) {
+      setFormError('Government ID Verification Required: Please upload your PAN Card, Voter ID, or Driving License in Profile Settings to request outings.');
+      return;
+    }
 
     // Check if Booker is currently suspended
     if (currentUser.accountStatus === 'Suspended') {
@@ -275,9 +283,23 @@ export const BookingRequestModal: React.FC<BookingRequestModalProps> = ({
           ) : (
             <form onSubmit={handleSubmit} className="space-y-5">
               {formError && (
-                <div className="p-3 bg-rose-950/80 border border-rose-800 text-rose-300 rounded-xl text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-                  <span>{formError}</span>
+                <div className="p-3 bg-rose-950/80 border border-rose-800 text-rose-300 rounded-xl text-xs flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                    <span>{formError}</span>
+                  </div>
+                  {!currentUser?.isVerified && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        openProfileModal('profile');
+                      }}
+                      className="self-start px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                    >
+                      Verify ID in Profile Settings →
+                    </button>
+                  )}
                 </div>
               )}
 
