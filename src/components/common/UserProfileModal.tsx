@@ -5,7 +5,7 @@ import { saveUserToSheet } from '../../services/googleSheetsService';
 import { CopyUserIdButton } from './CopyUserIdButton';
 import { compressImageFile } from '../../utils/imageCompressor';
 import { copyToClipboard } from '../../utils/clipboard';
-import { validateIdNumber } from '../../utils/idValidator';
+import { validateIdNumber, validateIdDocumentImage, EXACT_IMAGE_ERROR } from '../../utils/idValidator';
 import { 
   X, 
   Sparkles, 
@@ -30,14 +30,13 @@ import {
   Copy,
   MessageSquare,
   Wallet,
-  Crown,
-  ShieldAlert
+  Crown
 } from 'lucide-react';
 import { useRazorpayPayment } from '../../hooks/useRazorpayPayment';
 
 export type ProfileTab = 'gallery_ratings' | 'edit_profile' | 'wallet_lifeline' | 'refer_earn' | 'pro';
 
-// 1. Strict Government ID Number Format Validator
+// Strict Government ID Number Format Validator
 const isValidGovIdFormat = (docType: AllowedDocumentType, rawId: string): { isValid: boolean; error?: string } => {
   const clean = (rawId || '').trim().toUpperCase().replace(/[\s-]/g, '');
   if (!clean) {
@@ -55,109 +54,14 @@ const isValidGovIdFormat = (docType: AllowedDocumentType, rawId: string): { isVa
     }
     return { isValid: true };
   }
-  // Indian Driving License: 2 State letters + 2 RTO digits + 4 Year digits + 7 digits (15 chars total, e.g. WB17 20250001080)
-  if (!/^[A-Z]{2}[0-9]{2}(19|20)[0-9]{2}[0-9]{7}$/.test(clean)) {
+  // Indian Driving License: e.g. WB17 20250001080
+  if (!/^[A-Z]{2}[0-9A-Z]{11,15}$/.test(clean)) {
     const fallback = validateIdNumber(docType, rawId);
     if (!fallback.isValid) {
       return { isValid: false, error: 'Invalid Driving License Number. Must be a valid 15-character Indian DL (e.g., WB17 20250001080).' };
     }
   }
   return { isValid: true };
-};
-
-// 2. Strict Document Image Scanner (Rejects dark screenshots/Reels, blank photos, and casual selfies; accepts real ID cards & DigiLocker)
-const inspectDocumentImageAuthenticity = (dataUrl: string): Promise<{ isValid: boolean; error?: string }> => {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const w = img.width;
-      const h = img.height;
-      if (w < 220 || h < 180) {
-        resolve({ isValid: false, error: 'Verification Failed: Image resolution is too low to read Government ID details.' });
-        return;
-      }
-
-      const canvas = document.createElement('canvas');
-      const sampleW = 200;
-      const sampleH = 200;
-      canvas.width = sampleW;
-      canvas.height = sampleH;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve({ isValid: true });
-        return;
-      }
-
-      ctx.drawImage(img, 0, 0, sampleW, sampleH);
-      const { data } = ctx.getImageData(0, 0, sampleW, sampleH);
-
-      let darkPixels = 0;
-      let brightPaperPixels = 0;
-      let skinTonePixels = 0;
-      let highContrastTextTransitions = 0;
-      const totalPixels = sampleW * sampleH;
-
-      for (let i = 0; i < data.length; i += 4) {
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
-        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-
-        if (lum < 55) darkPixels++;
-        if (lum > 165 && Math.abs(r - g) < 35 && Math.abs(g - b) < 35) brightPaperPixels++;
-
-        // Detect large selfie skin-tone dominance
-        if (r > 95 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 15) {
-          skinTonePixels++;
-        }
-
-        if (i >= 4) {
-          const prevLum = 0.299 * data[i - 4] + 0.587 * data[i - 3] + 0.114 * data[i - 2];
-          if (Math.abs(lum - prevLum) > 45) {
-            highContrastTextTransitions++;
-          }
-        }
-      }
-
-      const darkRatio = darkPixels / totalPixels;
-      const brightRatio = brightPaperPixels / totalPixels;
-      const skinRatio = skinTonePixels / totalPixels;
-      const textEdgeRatio = highContrastTextTransitions / totalPixels;
-
-      // 1. Reject dark mode phone screenshots (like Instagram Reels, gaming screens, or dark wallpapers)
-      if (darkRatio > 0.38) {
-        resolve({
-          isValid: false,
-          error: 'Verification Failed: Dark screenshots, Reels, or dim photos are not valid Government IDs. Please upload a clear, bright document scan or DigiLocker certificate.',
-        });
-        return;
-      }
-
-      // 2. Reject casual selfies / portraits where skin tone dominates or document background is missing
-      if (skinRatio > 0.32 || brightRatio < 0.18) {
-        resolve({
-          isValid: false,
-          error: 'Verification Failed: Casual photos or selfies are not accepted. Please upload your official PAN Card, Voter ID, or Driving License.',
-        });
-        return;
-      }
-
-      // 3. Reject blank/solid images without printed text lines
-      if (textEdgeRatio < 0.025) {
-        resolve({
-          isValid: false,
-          error: 'Verification Failed: No readable printed Government ID text detected in this image.',
-        });
-        return;
-      }
-
-      resolve({ isValid: true });
-    };
-    img.onerror = () => {
-      resolve({ isValid: false, error: 'Invalid image file. Please select a clear JPG or PNG photo of your ID.' });
-    };
-    img.src = dataUrl;
-  });
 };
 
 export const UserProfileModal: React.FC = () => {
@@ -167,7 +71,6 @@ export const UserProfileModal: React.FC = () => {
     profileModalInitialTab,
     currentUser, 
     updateCurrentUserProfile, 
-    submitAddressVerification,
     platformSettings, 
     submitProSubscriptionPayment,
     bookings,
@@ -207,6 +110,7 @@ export const UserProfileModal: React.FC = () => {
   const [documentType, setDocumentType] = useState<AllowedDocumentType>(currentUser?.documentType || 'Voter ID Card');
   const [documentImageUrl, setDocumentImageUrl] = useState(currentUser?.idDocumentImage || currentUser?.idProofUrl || currentUser?.documentImageUrl || currentUser?.idDocumentUrl || '');
   const [documentIdNumber, setDocumentIdNumber] = useState(currentUser?.idDocumentNumber || currentUser?.documentIdNumber || '');
+  const [ isNewDocUploaded, setIsNewDocUploaded ] = useState<boolean>(false);
   const [docValidationError, setDocValidationError] = useState<string | null>(null);
   const [isValidatingDoc, setIsValidatingDoc] = useState<boolean>(false);
   const [serviceAreasStr, setServiceAreasStr] = useState(
@@ -240,6 +144,7 @@ export const UserProfileModal: React.FC = () => {
       setDocumentType(currentUser.documentType || 'Voter ID Card');
       setDocumentImageUrl(currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '');
       setDocumentIdNumber(currentUser.idDocumentNumber || currentUser.documentIdNumber || '');
+      setIsNewDocUploaded(false);
       setDocValidationError(null);
       setServiceAreasStr((currentUser.serviceAreas || []).join(', '));
       setBio(currentUser.bio);
@@ -305,7 +210,7 @@ export const UserProfileModal: React.FC = () => {
     }
   };
 
-  // Document Upload with Strict Anti-Screenshot / Anti-Selfie Inspection + ID Format Validation
+  // Document Upload with Full OCR Text & Profile Legal Name Matching BEFORE Compression
   const handleDocImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -317,7 +222,13 @@ export const UserProfileModal: React.FC = () => {
       return;
     }
 
-    // Require valid ID number before accepting document image
+    const trimmedName = fullName.trim();
+    if (!trimmedName || trimmedName.length < 3) {
+      setDocValidationError('Please enter your Full Legal Name (as printed on your ID) above before uploading the document.');
+      e.target.value = '';
+      return;
+    }
+
     const cleanIdNum = documentIdNumber.trim().toUpperCase();
     const idCheck = isValidGovIdFormat(documentType, cleanIdNum);
     if (!idCheck.isValid) {
@@ -328,6 +239,16 @@ export const UserProfileModal: React.FC = () => {
 
     setIsValidatingDoc(true);
     try {
+      // 1. Run high-clarity OCR & pixel validation on the raw file BEFORE compressing
+      const ocrValidation = await validateIdDocumentImage(file, trimmedName, documentType);
+      if (!ocrValidation.isValid) {
+        setDocValidationError(ocrValidation.error || EXACT_IMAGE_ERROR);
+        e.target.value = '';
+        setIsValidatingDoc(false);
+        return;
+      }
+
+      // 2. Compress for lightweight Firestore storage (<80KB) after OCR passes
       const compressed = await compressImageFile(file, 600, 600, 0.6);
       if (!compressed) {
         setDocValidationError('Could not process image. Please try another clear photo.');
@@ -335,16 +256,8 @@ export const UserProfileModal: React.FC = () => {
         return;
       }
 
-      // Check image authenticity (blocks dark screenshots/Reels, selfies, and blank images)
-      const imgCheck = await inspectDocumentImageAuthenticity(compressed);
-      if (!imgCheck.isValid) {
-        setDocValidationError(imgCheck.error || 'Invalid ID document image.');
-        e.target.value = '';
-        setIsValidatingDoc(false);
-        return;
-      }
-
       setDocumentImageUrl(compressed);
+      setIsNewDocUploaded(true);
       setDocValidationError(null);
     } catch {
       setDocValidationError('Failed to validate document image. Please upload a clear photo of your ID.');
@@ -382,8 +295,8 @@ export const UserProfileModal: React.FC = () => {
 
     const effectiveDocImage = (documentImageUrl || '').trim();
     const cleanIdNum = documentIdNumber.trim().toUpperCase();
+    const prevIdNum = (currentUser.idDocumentNumber || currentUser.documentIdNumber || '').trim().toUpperCase();
 
-    // Validate ID if provided
     let isNowAutoVerified = false;
     if (effectiveDocImage || cleanIdNum) {
       if (effectiveDocImage && !cleanIdNum) {
@@ -399,10 +312,16 @@ export const UserProfileModal: React.FC = () => {
         setDocValidationError(numVal.error || 'Invalid Government ID number format.');
         return;
       }
-      const imgCheck = await inspectDocumentImageAuthenticity(effectiveDocImage);
-      if (!imgCheck.isValid) {
-        setDocValidationError(imgCheck.error || 'Invalid Government ID image.');
-        return;
+
+      // If user uploaded a new document or changed their ID number / name while unverified, ensure OCR passes
+      if (isNewDocUploaded || cleanIdNum !== prevIdNum || !currentUser.isVerified) {
+        setIsValidatingDoc(true);
+        const ocrCheck = await validateIdDocumentImage(effectiveDocImage, trimmedName, documentType);
+        setIsValidatingDoc(false);
+        if (!ocrCheck.isValid) {
+          setDocValidationError(ocrCheck.error || EXACT_IMAGE_ERROR);
+          return;
+        }
       }
       isNowAutoVerified = true;
     }
@@ -410,7 +329,6 @@ export const UserProfileModal: React.FC = () => {
     const trimmedAvatar = avatarUrl.trim() || currentUser.avatarUrl;
     const finalVerifiedState = isNowAutoVerified || Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected');
 
-    // Single unified update call so submitAddressVerification never overwrites the new Full Legal Name!
     updateCurrentUserProfile({
       fullName: trimmedName,
       name: trimmedName,
@@ -435,6 +353,8 @@ export const UserProfileModal: React.FC = () => {
       isVerified: finalVerifiedState,
       verificationStatus: finalVerifiedState ? 'Verified' : (currentUser.verificationStatus || 'Unverified'),
     });
+
+    setIsNewDocUploaded(false);
 
     saveUserToSheet({
       fullName: trimmedName,
@@ -695,7 +615,7 @@ export const UserProfileModal: React.FC = () => {
             {saveSuccess && (
               <div className="p-3 bg-emerald-950/80 border border-emerald-700/60 text-emerald-200 rounded-xl text-xs font-bold flex items-center gap-2 animate-fadeIn shadow-lg">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Profile name &amp; settings saved to live server successfully!</span>
+                <span>Profile name, ID verification &amp; settings saved to live server!</span>
               </div>
             )}
 
@@ -1456,7 +1376,7 @@ export const UserProfileModal: React.FC = () => {
                             Address &amp; Government ID Verification
                           </span>
                           <span className="text-[10px] text-slate-400">
-                            Step 1: Enter valid ID number • Step 2: Upload clear original ID or DigiLocker certificate • Step 3: Click Save Profile Changes.
+                            Name on your ID must match your Full Legal Name above. Official PAN, Voter ID &amp; Driving License / DigiLocker accepted.
                           </span>
                         </div>
                       </div>
@@ -1480,7 +1400,7 @@ export const UserProfileModal: React.FC = () => {
                     {isValidatingDoc && (
                       <div className="p-2.5 bg-indigo-950/70 border border-indigo-800 rounded-xl text-cyan-300 text-xs flex items-center gap-2">
                         <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
-                        <span>Scanning document clarity &amp; rejecting invalid screenshots...</span>
+                        <span>Reading Government ID text &amp; matching your Legal Name...</span>
                       </div>
                     )}
 
@@ -1554,11 +1474,11 @@ export const UserProfileModal: React.FC = () => {
                             </div>
                             <div>
                               <span className="text-xs font-bold text-white block">
-                                {documentType} Selected
+                                {documentType} Verified
                               </span>
                               <span className="text-[10px] text-emerald-300 font-semibold flex items-center gap-1 mt-0.5">
                                 <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                <span>Click "Save Profile Changes" below to finalize</span>
+                                <span>Click "Save Profile Changes" below to save</span>
                               </span>
                             </div>
                           </div>
@@ -1629,10 +1549,11 @@ export const UserProfileModal: React.FC = () => {
 
                     <button
                       type="submit"
-                      className="flex items-center gap-1.5 px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-900/40 cursor-pointer active:scale-95"
+                      disabled={isValidatingDoc}
+                      className="flex items-center gap-1.5 px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-900/40 cursor-pointer active:scale-95 disabled:opacity-50"
                     >
                       <Save className="w-3.5 h-3.5" />
-                      <span>Save Profile Changes</span>
+                      <span>{isValidatingDoc ? 'Verifying ID...' : 'Save Profile Changes'}</span>
                     </button>
                   </div>
                 </form>
@@ -1719,9 +1640,7 @@ export const UserProfileModal: React.FC = () => {
               </div>
             )}
 
-            {/* ============================================================= */}
-            {/* TAB 5: 👑 UPGRADE TO PRO (COMPLETE CIRQLR PRO BENEFITS)       */}
-            {/* ============================================================= */}
+            {/* TAB 5: UPGRADE TO PRO (COMPLETE CIRQLR PRO BENEFITS) */}
             {activeTab === 'pro' && (
               <div className="bg-gradient-to-br from-slate-900/95 via-slate-900/90 to-amber-950/40 rounded-2xl border border-amber-500/50 p-5 sm:p-6 shadow-2xl space-y-5 relative overflow-hidden animate-fadeIn">
                 <div className="absolute top-0 right-0 w-44 h-44 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
