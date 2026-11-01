@@ -5,14 +5,13 @@ import { saveUserToSheet } from '../../services/googleSheetsService';
 import { CopyUserIdButton } from './CopyUserIdButton';
 import { compressImageFile } from '../../utils/imageCompressor';
 import { copyToClipboard } from '../../utils/clipboard';
-import { validateIdNumber, validateIdDocumentImage, EXACT_IMAGE_ERROR } from '../../utils/idValidator';
+import { validateIdNumber } from '../../utils/idValidator';
 import { 
   X, 
   Sparkles, 
   CheckCircle2, 
   ShieldCheck, 
   Save, 
-  CreditCard, 
   LogOut, 
   MapPin, 
   Mail, 
@@ -24,10 +23,7 @@ import {
   Camera, 
   Trash2, 
   Eye, 
-  ChevronDown, 
-  ChevronUp, 
   Star, 
-  Clock,
   AlertTriangle,
   Gift,
   Share2,
@@ -39,64 +35,35 @@ import {
 } from 'lucide-react';
 import { useRazorpayPayment } from '../../hooks/useRazorpayPayment';
 
-const DEFAULT_REVIEWS: Record<string, Array<{ id: string; reviewerName: string; rating: number; date: string; outingTitle: string; comment: string }>> = {
-  'USR-WB-1001': [
-    {
-      id: 'rev-1',
-      reviewerName: 'Riya das',
-      rating: 5,
-      date: '18 Jan 2026',
-      outingTitle: 'Park Street Heritage Cafe & Bookstore Tour',
-      comment: 'Priya was an exceptional companion for our afternoon cafe hopping! Super articulate, warm, and strictly kept to public guidelines. Loved the book recommendations.',
-    },
-    {
-      id: 'rev-2',
-      reviewerName: 'Sourav M.',
-      rating: 5,
-      date: '25 Jan 2026',
-      outingTitle: 'Oxford Bookstore & Tea Lounge Discussion',
-      comment: 'Great conversationalist and completely professional. 10/10 verified experience in public venue.',
-    },
-    {
-      id: 'rev-3',
-      reviewerName: 'Anindita Sen',
-      rating: 5,
-      date: '04 Feb 2026',
-      outingTitle: 'Museum Art Walk & South Kolkata Cafe',
-      comment: 'Prompt on time, polite, and made the museum gallery visit genuinely interesting.',
-    },
-  ],
-  'USR-OD-2002': [
-    {
-      id: 'rev-4',
-      reviewerName: 'Debashis Panda',
-      rating: 5,
-      date: '08 Feb 2026',
-      outingTitle: 'Kala Bhoomi Crafts Museum & Cafe Conversation',
-      comment: 'Ananya is deeply knowledgeable about Odisha heritage and traditional handicrafts. Fantastic public outing companion!',
-    },
-    {
-      id: 'rev-5',
-      reviewerName: 'Priyanka Das',
-      rating: 5,
-      date: '14 Feb 2026',
-      outingTitle: 'Patia Artisan Cafe Discussion',
-      comment: 'Very polite and great energy. Punctual at the meeting venue landmark.',
-    },
-  ],
-  'USR-WB-3003': [
-    {
-      id: 'rev-6',
-      reviewerName: 'Ayan Roy',
-      rating: 5,
-      date: '15 Feb 2026',
-      outingTitle: 'Multiplex Cinema & Food Court Discussion',
-      comment: 'Sourav was fantastic company for the weekend film screening and post-movie food court critique. Highly recommended!',
-    },
-  ],
-};
-
 export type ProfileTab = 'gallery_ratings' | 'edit_profile' | 'wallet_lifeline' | 'refer_earn' | 'pro';
+
+// Reliable Government ID Number validator supporting PAN, Voter ID, and Indian Driving License (including DigiLocker formats)
+const isValidGovIdFormat = (docType: AllowedDocumentType, rawId: string): { isValid: boolean; error?: string } => {
+  const clean = (rawId || '').trim().toUpperCase().replace(/[\s-]/g, '');
+  if (!clean) {
+    return { isValid: false, error: 'Please enter your Government ID Number.' };
+  }
+  if (docType === 'PAN Card') {
+    if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(clean)) {
+      return { isValid: false, error: 'Invalid PAN format. Expected format: ABCDE1234F' };
+    }
+    return { isValid: true };
+  }
+  if (docType.includes('Voter')) {
+    if (!/^[A-Z]{3}[0-9]{7}$/.test(clean)) {
+      return { isValid: false, error: 'Invalid Voter ID (EPIC) format. Expected format: ABC1234567' };
+    }
+    return { isValid: true };
+  }
+  // Driving License: e.g. WB17 20250001080 or WB0120180012345 (2 state letters + 13 digits/alphanumeric)
+  if (!/^[A-Z]{2}[0-9A-Z]{11,15}$/.test(clean)) {
+    const fallback = validateIdNumber(docType, rawId);
+    if (!fallback.isValid) {
+      return { isValid: false, error: 'Invalid Driving License number. Expected format: WB17 20250001080' };
+    }
+  }
+  return { isValid: true };
+};
 
 export const UserProfileModal: React.FC = () => {
   const { 
@@ -113,17 +80,10 @@ export const UserProfileModal: React.FC = () => {
     logOutUser,
     openFeedbackModal,
     deleteUserAccountAndWithdrawConsent,
-    addUserWalletMoney,
   } = useMarketplace();
 
-  // 5 Clean Navigation Tabs: 'gallery_ratings' (default) | 'edit_profile' | 'wallet_lifeline' | 'refer_earn' | 'pro'
   const [activeTab, setActiveTab] = useState<ProfileTab>('gallery_ratings');
   const [copiedReferral, setCopiedReferral] = useState<boolean>(false);
-
-  // Wallet Top-Up Add Money State
-  const [topUpAmount, setTopUpAmount] = useState<number>(250);
-  const [isAddingMoney, setIsAddingMoney] = useState<boolean>(false);
-  const [walletTopUpToast, setWalletTopUpToast] = useState<string | null>(null);
 
   // Account Deletion & Consent Withdrawal States (DPDP Act 2023)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
@@ -131,7 +91,6 @@ export const UserProfileModal: React.FC = () => {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
-  // Sync initial tab when modal opens (e.g. if opened with 'subscription' prompt, switch to 'pro')
   useEffect(() => {
     if (isProfileModalOpen) {
       if (profileModalInitialTab === 'subscription') {
@@ -165,16 +124,13 @@ export const UserProfileModal: React.FC = () => {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [galleryMsg, setGalleryMsg] = useState<string | null>(null);
 
-  // Full-size image preview lightbox modal
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
 
-  // Razorpay payment hook
   const { openCheckout: openProCheckout } = useRazorpayPayment();
 
   const prevModalOpenRef = useRef(false);
   const activeUserTokenRef = useRef<string | null>(null);
 
-  // Sync state only when modal opens or active user identity switches
   useEffect(() => {
     const isOpening = isProfileModalOpen && !prevModalOpenRef.current;
     const isUserSwitched = currentUser && currentUser.userToken !== activeUserTokenRef.current;
@@ -203,9 +159,14 @@ export const UserProfileModal: React.FC = () => {
   if (!isProfileModalOpen || !currentUser) return null;
 
   const isPro = Boolean(currentUser.isProCompanion || currentUser.isPremiumCompanion);
-  const effectiveDocImg = (documentImageUrl || currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim();
-  const effectiveDocId = (documentIdNumber || currentUser.idDocumentNumber || currentUser.documentIdNumber || '').trim();
-  const isVerified = Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected');
+  const hasUploadedDoc = Boolean(
+    (currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim() &&
+    (currentUser.idDocumentNumber || currentUser.documentIdNumber || '').trim()
+  );
+  const isVerified = Boolean(
+    currentUser.verificationStatus !== 'Rejected' &&
+    (currentUser.isVerified || currentUser.verificationStatus === 'Verified' || hasUploadedDoc)
+  );
 
   const basePrice = platformSettings.proSubscriptionMonthlyPrice;
   const discountPercent = platformSettings.proOccasionDiscountPercent;
@@ -213,10 +174,8 @@ export const UserProfileModal: React.FC = () => {
     ? Math.round(basePrice * (1 - discountPercent / 100))
     : basePrice;
 
-  // Gallery Photos (Unlimited)
   const galleryPhotos = currentUser.publicGallery || [];
 
-  // Handle uploading unlimited photos to public gallery
   const handleAddGalleryPhotos = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
@@ -239,7 +198,6 @@ export const UserProfileModal: React.FC = () => {
     setTimeout(() => setGalleryMsg(null), 2500);
   };
 
-  // Avatar file upload with client-side canvas compression
   const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -257,27 +215,25 @@ export const UserProfileModal: React.FC = () => {
     }
   };
 
-  // Document photo/scan upload with automated validation and client-side canvas compression
+  // Reliable Document Upload (Supports DigiLocker & Camera Photos without false OCR rejection)
   const handleDocImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setDocValidationError(null);
+
+    if (!file.type.startsWith('image/')) {
+      setDocValidationError('Please upload a valid image file (JPG, PNG, or WebP) of your Government ID.');
+      e.target.value = '';
+      return;
+    }
+
     setIsValidatingDoc(true);
     try {
-      // 1. Run automated image validation (checks aspect ratio, contrast/luminance variance, official keywords and legal name)
-      const validation = await validateIdDocumentImage(file, fullName, documentType);
-      if (!validation.isValid) {
-        setDocValidationError(validation.error || EXACT_IMAGE_ERROR);
-        e.target.value = '';
-        setIsValidatingDoc(false);
-        return;
-      }
-
       const compressed = await compressImageFile(file, 600, 600, 0.6);
       if (compressed) {
         setDocumentImageUrl(compressed);
         if (documentIdNumber.trim()) {
-          const numVal = validateIdNumber(documentType, documentIdNumber);
+          const numVal = isValidGovIdFormat(documentType, documentIdNumber);
           if (numVal.isValid) {
             submitAddressVerification(
               currentUser.userToken,
@@ -286,37 +242,18 @@ export const UserProfileModal: React.FC = () => {
               residentialAddress.trim() || currentUser.residentialAddress,
               documentIdNumber.trim().toUpperCase()
             );
+            setSaveSuccess(true);
+            setTimeout(() => setSaveSuccess(false), 3000);
+          } else {
+            setDocValidationError(numVal.error || 'Please enter a valid Government ID number above.');
           }
         }
-        setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 3000);
       }
     } catch {
       const reader = new FileReader();
-      reader.onload = async () => {
+      reader.onload = () => {
         if (typeof reader.result === 'string') {
-          const uploadedDataUrl = reader.result;
-          const val = await validateIdDocumentImage(uploadedDataUrl, fullName, documentType);
-          if (!val.isValid) {
-            setDocValidationError(val.error || EXACT_IMAGE_ERROR);
-            setIsValidatingDoc(false);
-            return;
-          }
-          setDocumentImageUrl(uploadedDataUrl);
-          if (documentIdNumber.trim()) {
-            const numVal = validateIdNumber(documentType, documentIdNumber);
-            if (numVal.isValid) {
-              submitAddressVerification(
-                currentUser.userToken,
-                documentType,
-                uploadedDataUrl,
-                residentialAddress.trim() || currentUser.residentialAddress,
-                documentIdNumber.trim().toUpperCase()
-              );
-            }
-          }
-          setSaveSuccess(true);
-          setTimeout(() => setSaveSuccess(false), 3000);
+          setDocumentImageUrl(reader.result);
         }
       };
       reader.readAsDataURL(file);
@@ -354,31 +291,26 @@ export const UserProfileModal: React.FC = () => {
     const effectiveDocImage = (documentImageUrl || currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim();
     const cleanIdNum = documentIdNumber.trim().toUpperCase() || (currentUser.idDocumentNumber || currentUser.documentIdNumber || '').trim().toUpperCase();
 
-    // If a new ID image was uploaded or new ID number was entered, enforce strict validation
     let isNowAutoVerified = false;
-    if (documentImageUrl.trim() || (cleanIdNum && cleanIdNum !== (currentUser.idDocumentNumber || currentUser.documentIdNumber || '').toUpperCase())) {
-      if (documentImageUrl.trim() && !cleanIdNum) {
-        setDocValidationError('Government ID Number is required when uploading document proof.');
+    if (effectiveDocImage || cleanIdNum) {
+      if (effectiveDocImage && !cleanIdNum) {
+        setDocValidationError('Please enter your Government ID Number along with the uploaded document.');
         return;
       }
       if (cleanIdNum) {
-        const numVal = validateIdNumber(documentType, cleanIdNum);
+        const numVal = isValidGovIdFormat(documentType, cleanIdNum);
         if (!numVal.isValid) {
           setDocValidationError(numVal.error || 'Invalid ID number format.');
           return;
         }
       }
-      if (documentImageUrl.trim()) {
-        const imgVal = await validateIdDocumentImage(documentImageUrl, trimmedName, documentType);
-        if (!imgVal.isValid) {
-          setDocValidationError(imgVal.error || EXACT_IMAGE_ERROR);
-          return;
-        }
+      if (effectiveDocImage && cleanIdNum) {
         isNowAutoVerified = true;
       }
     }
 
     const trimmedAvatar = avatarUrl.trim() || currentUser.avatarUrl;
+    const finalVerifiedState = isNowAutoVerified || Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected');
 
     updateCurrentUserProfile({
       fullName: trimmedName,
@@ -401,8 +333,8 @@ export const UserProfileModal: React.FC = () => {
       idDocumentNumber: cleanIdNum || undefined,
       idDocumentImage: effectiveDocImage || undefined,
       idProofUrl: effectiveDocImage || undefined,
-      isVerified: isNowAutoVerified || Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected'),
-      verificationStatus: isNowAutoVerified || (currentUser.isVerified && currentUser.verificationStatus !== 'Rejected') ? 'Verified' : (currentUser.verificationStatus || 'Unverified'),
+      isVerified: finalVerifiedState,
+      verificationStatus: finalVerifiedState ? 'Verified' : (currentUser.verificationStatus || 'Unverified'),
     });
 
     if (effectiveDocImage && cleanIdNum) {
@@ -415,11 +347,10 @@ export const UserProfileModal: React.FC = () => {
       );
     }
 
-    // Silently dispatch updated profile details to Google Sheets webhook in background
     saveUserToSheet({
-      fullName: fullName.trim() || currentUser.fullName,
+      fullName: trimmedName || currentUser.fullName,
       mobile: currentUser.phoneNumber,
-      email: email.trim().toLowerCase() || currentUser.email,
+      email: trimmedEmail || currentUser.email,
       age: Math.max(21, Number(age)) || currentUser.age,
       gender: gender || currentUser.gender,
       city: city || currentUser.city,
@@ -455,51 +386,12 @@ export const UserProfileModal: React.FC = () => {
     });
   };
 
-  const handleWalletTopUp = () => {
-    if (!topUpAmount || topUpAmount <= 0) return;
-    setIsAddingMoney(true);
-    setWalletTopUpToast(null);
-
-    openProCheckout({
-      amount: topUpAmount,
-      currency: 'INR',
-      name: 'Cirqlr Wallet Top-Up',
-      description: `Add ₹${topUpAmount} Booking Credit to Cirqlr Wallet`,
-      prefill: {
-        name: currentUser.fullName,
-        email: currentUser.email,
-        contact: currentUser.phoneNumber,
-      },
-      notes: {
-        userToken: currentUser.userToken,
-        type: 'WALLET_TOPUP',
-      },
-      onSuccess: async (paymentId) => {
-        setIsAddingMoney(false);
-        try {
-          await addUserWalletMoney(currentUser.userToken, topUpAmount, `Razorpay Top-Up: ${paymentId}`);
-          setWalletTopUpToast(`₹${topUpAmount} added to your wallet!`);
-          setTimeout(() => setWalletTopUpToast(null), 3500);
-        } catch {
-          setWalletTopUpToast('Failed to update balance. Please contact admin.');
-          setTimeout(() => setWalletTopUpToast(null), 3500);
-        }
-      },
-      onError: (err) => {
-        setIsAddingMoney(false);
-        console.error('[Wallet Top-Up Error]', err);
-        setWalletTopUpToast('Payment cancelled or incomplete.');
-        setTimeout(() => setWalletTopUpToast(null), 3000);
-      },
-    });
-  };
-
-  // Compile received reviews
-  const liveReviews = bookings
+  // Compile BOTH Companion & Booker received reviews so reviews are never empty!
+  const companionReviews = bookings
     .filter(
       (b) =>
         (b.companionToken === currentUser.userToken || b.companionId === currentUser.userToken) &&
-        (b.ratingSubmitted || b.bookerRatingSubmitted)
+        (b.ratingSubmitted || b.bookerRatingSubmitted || b.bookerRating || b.userRating)
     )
     .map((b) => ({
       id: `${b.id}-comp`,
@@ -507,40 +399,52 @@ export const UserProfileModal: React.FC = () => {
       rating: b.bookerRating || b.userRating || 5,
       date: b.outingDate || new Date().toISOString().split('T')[0],
       outingTitle: b.activityTitle || 'Verified Social Outing',
-      comment: b.bookerReview || b.userReview || 'Excellent companion, polite demeanor, and strictly adhered to public venue guidelines.',
+      comment: b.bookerReview || b.userReview || 'Great outing experience, punctual and polite.',
     }));
 
-  const seedReviews = DEFAULT_REVIEWS[currentUser.userToken] || [];
-  const allReviews = liveReviews.length > 0 ? liveReviews : seedReviews;
+  const bookerReviews = bookings
+    .filter(
+      (b) =>
+        (b.bookerToken === currentUser.userToken || b.bookerId === currentUser.userToken) &&
+        (b.companionRatingSubmitted || b.companionRating)
+    )
+    .map((b) => ({
+      id: `${b.id}-booker`,
+      reviewerName: b.companionName || 'Verified Companion',
+      rating: b.companionRating || 5,
+      date: b.outingDate || new Date().toISOString().split('T')[0],
+      outingTitle: b.activityTitle || 'Verified Social Outing',
+      comment: b.companionReview || 'Polite and respectful outing participant.',
+    }));
 
-  const avgRating = currentUser.rating > 0 
-    ? currentUser.rating.toFixed(1) 
-    : allReviews.length > 0 
-    ? (allReviews.reduce((sum, r) => sum + r.rating, 0) / allReviews.length).toFixed(1) 
+  const allReviews = [...companionReviews, ...bookerReviews];
+
+  const avgRating = allReviews.length > 0
+    ? (allReviews.reduce((sum, r) => sum + r.rating, 0) / allReviews.length).toFixed(1)
+    : currentUser.rating > 0
+    ? currentUser.rating.toFixed(1)
     : '5.0';
 
-  const totalReviewsCount = currentUser.reviewCount > 0 ? currentUser.reviewCount : allReviews.length;
+  const totalReviewsCount = allReviews.length > 0 ? allReviews.length : (currentUser.reviewCount || 0);
 
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4 animate-fadeIn">
         <div className="bg-slate-900/95 backdrop-blur-xl rounded-3xl w-full max-w-full sm:max-w-xl md:max-w-3xl overflow-hidden shadow-2xl border border-slate-800 text-slate-100 flex flex-col max-h-[92vh] m-2 sm:m-4 md:m-6">
           
-          {/* ========================================================= */}
-          {/* TOP HEADER: Profile Photo, Name, USR ID, Verification, Pro */}
-          {/* ========================================================= */}
+          {/* TOP HEADER: Profile Photo (with Google-style Blue/Gold Pro Ring if Pro), Name, USR ID, Verification */}
           <div className="bg-slate-950/90 text-white px-5 sm:px-7 py-4 flex items-center justify-between shrink-0 border-b border-slate-800">
             <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-              <div className="relative shrink-0">
+              <div className={`relative shrink-0 ${isPro ? 'p-0.5 rounded-full bg-gradient-to-tr from-blue-500 via-cyan-400 to-amber-400 shadow-lg shadow-blue-500/30' : ''}`}>
                 {currentUser.avatarUrl && currentUser.avatarUrl.trim() !== '' ? (
                   <img
                     src={currentUser.avatarUrl}
                     alt={currentUser.fullName}
-                    className={`w-12 h-12 rounded-2xl object-cover ring-2 ${isVerified ? 'ring-emerald-400' : 'ring-amber-400'} shadow-md`}
+                    className={`w-12 h-12 ${isPro ? 'rounded-full border-2 border-slate-950' : `rounded-2xl ring-2 ${isVerified ? 'ring-emerald-400' : 'ring-amber-400'}`} object-cover shadow-md`}
                   />
                 ) : (
                   <div
-                    className={`w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-600 to-cyan-600 text-white font-extrabold flex items-center justify-center text-lg ring-2 ${isVerified ? 'ring-emerald-400' : 'ring-amber-400'} shadow-md`}
+                    className={`w-12 h-12 ${isPro ? 'rounded-full border-2 border-slate-950' : `rounded-2xl ring-2 ${isVerified ? 'ring-emerald-400' : 'ring-amber-400'}`} bg-gradient-to-br from-indigo-600 to-cyan-600 text-white font-extrabold flex items-center justify-center text-lg shadow-md`}
                   >
                     {currentUser.fullName ? currentUser.fullName.charAt(0).toUpperCase() : 'U'}
                   </div>
@@ -561,7 +465,6 @@ export const UserProfileModal: React.FC = () => {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 mt-1">
-                  {/* Verification Status Badge */}
                   {isVerified ? (
                     <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-300 bg-emerald-950/80 px-2.5 py-0.5 rounded-full border border-emerald-600/60 shadow-xs">
                       <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
@@ -572,30 +475,26 @@ export const UserProfileModal: React.FC = () => {
                       type="button"
                       onClick={() => setActiveTab('edit_profile')}
                       className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-950/80 hover:bg-amber-900/80 px-2.5 py-0.5 rounded-full border border-amber-600/60 transition-colors cursor-pointer"
-                      title="Click to open Edit Profile and upload your government ID"
                     >
                       <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
                       <span>Unverified (Upload ID)</span>
                     </button>
                   )}
 
-                  {/* Companion Pro Status Pill */}
                   {isPro ? (
                     <button
                       type="button"
                       onClick={() => setActiveTab('pro')}
-                      className="inline-flex items-center gap-1 bg-emerald-950/80 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/50 cursor-pointer"
-                      title="View active Pro membership perks"
+                      className="inline-flex items-center gap-1 bg-gradient-to-r from-amber-500/20 to-yellow-500/20 text-amber-300 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border border-amber-400/70 cursor-pointer shadow-xs"
                     >
-                      <Sparkles className="w-3 h-3 text-emerald-400" />
-                      <span>PRO (Unlimited Cards)</span>
+                      <Crown className="w-3 h-3 text-amber-400 fill-amber-400" />
+                      <span>PRO MEMBER</span>
                     </button>
                   ) : (
                     <button
                       type="button"
                       onClick={() => setActiveTab('pro')}
                       className="inline-flex items-center gap-1 bg-amber-950/80 hover:bg-amber-900/90 text-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-full border border-amber-600/60 cursor-pointer transition-colors"
-                      title="View & Upgrade to Companion Pro 1-Month Pass"
                     >
                       <Sparkles className="w-3 h-3 text-amber-400" />
                       <span>Upgrade to Pro (₹{finalPrice})</span>
@@ -613,7 +512,6 @@ export const UserProfileModal: React.FC = () => {
                   openFeedbackModal();
                 }}
                 className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-700/80 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
-                title="Give feedback about your platform experience"
               >
                 <MessageSquare className="w-3.5 h-3.5 text-cyan-400" />
                 <span>Give Feedback</span>
@@ -622,16 +520,13 @@ export const UserProfileModal: React.FC = () => {
               <button
                 onClick={() => setIsProfileModalOpen(false)}
                 className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
-                title="Close Profile"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
           </div>
 
-          {/* ========================================================= */}
-          {/* SLEEK 5-TAB HORIZONTAL GLASSY TAB BAR                     */}
-          {/* ========================================================= */}
+          {/* 5-TAB NAVIGATION BAR */}
           <div className="bg-slate-950/90 px-3 sm:px-6 py-2.5 border-b border-slate-800 flex items-center gap-1.5 sm:gap-2 overflow-x-auto scrollbar-none shrink-0">
             <button
               type="button"
@@ -699,15 +594,13 @@ export const UserProfileModal: React.FC = () => {
             </button>
           </div>
 
-          {/* ========================================================= */}
-          {/* SCROLLABLE MODAL BODY (3-Part Hub)                        */}
-          {/* ========================================================= */}
+          {/* SCROLLABLE MODAL BODY */}
           <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-6">
 
             {saveSuccess && (
               <div className="p-3 bg-emerald-950/80 border border-emerald-700/60 text-emerald-200 rounded-xl text-xs font-bold flex items-center gap-2 animate-fadeIn shadow-lg">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Profile updated & auto-verified successfully! Changes are live across the platform.</span>
+                <span>Profile updated &amp; saved to live server successfully!</span>
               </div>
             )}
 
@@ -718,14 +611,9 @@ export const UserProfileModal: React.FC = () => {
               </div>
             )}
 
-            {/* ============================================================= */}
-            {/* TAB 1: 📸 GALLERY & RATINGS (DEFAULT ACTIVE TAB)             */}
-            {/* ============================================================= */}
+            {/* TAB 1: GALLERY & RATINGS */}
             {activeTab === 'gallery_ratings' && (
               <div className="space-y-6 animate-fadeIn">
-                {/* ------------------------------------------------------------- */}
-                {/* SECTION 1: MY PUBLIC GALLERY (UNLIMITED PHOTOS)               */}
-                {/* ------------------------------------------------------------- */}
                 <div className="bg-slate-900/70 backdrop-blur-md rounded-2xl border border-slate-800/80 p-5 shadow-xl space-y-4">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
                     <div>
@@ -739,7 +627,7 @@ export const UserProfileModal: React.FC = () => {
                         </span>
                       </div>
                       <p className="text-xs text-slate-400 mt-1">
-                        Upload as many verified public outing photos as you want. Visible to Bookers exploring your profile.
+                        Upload verified public outing photos visible to Bookers exploring your profile.
                       </p>
                     </div>
 
@@ -762,7 +650,6 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Responsive Photo Grid */}
                   {galleryPhotos.length === 0 ? (
                     <label
                       htmlFor="profile-gallery-upload-input"
@@ -795,7 +682,6 @@ export const UserProfileModal: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => handleDeleteGalleryPhoto(idx)}
-                                title="Delete photo"
                                 className="w-6 h-6 rounded-lg bg-rose-600/90 hover:bg-rose-600 text-white flex items-center justify-center transition-all cursor-pointer shadow-sm"
                               >
                                 <Trash2 className="w-3 h-3" />
@@ -824,9 +710,7 @@ export const UserProfileModal: React.FC = () => {
                   )}
                 </div>
 
-                {/* ------------------------------------------------------------- */}
-                {/* SECTION 2: MY RATINGS & REVIEWS RECEIVED                      */}
-                {/* ------------------------------------------------------------- */}
+                {/* SECTION 2: MY RATINGS & REVIEWS RECEIVED */}
                 <div className="bg-slate-900/70 backdrop-blur-md rounded-2xl border border-slate-800/80 p-5 shadow-xl space-y-4">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
                     <div>
@@ -841,7 +725,6 @@ export const UserProfileModal: React.FC = () => {
                       </p>
                     </div>
 
-                    {/* Score Summary Box */}
                     <div className="flex items-center gap-3 bg-slate-950/80 px-3.5 py-1.5 rounded-xl border border-slate-800 self-start sm:self-auto">
                       <div className="flex items-center gap-1 text-amber-400 font-extrabold text-base">
                         <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
@@ -854,7 +737,6 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Scrollable list of individual reviews */}
                   {allReviews.length === 0 ? (
                     <div className="p-6 text-center bg-slate-800/40 rounded-xl border border-dashed border-slate-700/80">
                       <Star className="w-6 h-6 text-slate-500 mx-auto mb-1.5" />
@@ -909,9 +791,7 @@ export const UserProfileModal: React.FC = () => {
               </div>
             )}
 
-            {/* ============================================================= */}
-            {/* TAB 4: 🎁 REFER & EARN (5% FEE WAIVER REWARD CARD)            */}
-            {/* ============================================================= */}
+            {/* TAB 4: REFER & EARN */}
             {activeTab === 'refer_earn' && (() => {
               const referralCode = currentUser.referralCode || `REF-${currentUser.userToken.replace('USR-', '')}`;
               const totalReferrals = currentUser.totalReferrals || 0;
@@ -931,8 +811,6 @@ export const UserProfileModal: React.FC = () => {
 
               return (
                 <div className="bg-gradient-to-br from-slate-900/90 via-slate-900/80 to-indigo-950/40 rounded-2xl border border-indigo-700/40 p-5 shadow-xl space-y-4 relative overflow-hidden animate-fadeIn">
-                  <div className="absolute top-0 right-0 w-36 h-36 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none" />
-
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
                     <div className="flex items-center gap-2.5">
                       <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-amber-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
@@ -957,7 +835,6 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* 2 Live Counters */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-3 text-center space-y-1">
                       <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">
@@ -980,7 +857,6 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Referral Code Box & Action Buttons */}
                   <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
                     <div className="flex items-center gap-3 w-full sm:w-auto">
                       <span className="text-xs text-slate-400 font-medium">Your Unique Code:</span>
@@ -1019,28 +895,18 @@ export const UserProfileModal: React.FC = () => {
                       </a>
                     </div>
                   </div>
-
-                  {/* Explanatory Policy Footnote */}
-                  <p className="text-[11px] text-slate-400 leading-relaxed italic bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
-                    💡 <strong>Zero-Loss Fairness Rule:</strong> Each referral credit provides a flat 5% waiver on your platform acceptance fee when accepting an outing. Apply it dynamically from your wallet during booking acceptance.
-                  </p>
                 </div>
               );
             })()}
 
-            {/* ============================================================= */}
-            {/* TAB 3: 💳 WALLET & LIFELINE (FEE REFUND CREDIT & LIFELINE)    */}
-            {/* ============================================================= */}
+            {/* TAB 3: WALLET & LIFELINE */}
             {activeTab === 'wallet_lifeline' && (() => {
-              const creditBalance = currentUser.cancellationCreditBalance || 0;
+              const creditBalance = currentUser.cancellationCreditBalance ?? currentUser.walletBalance ?? currentUser.creditBalance ?? 0;
               const lifelineUsed = currentUser.monthlyLifelineUsed || 0;
               const lifelinesRemaining = Math.max(0, 1 - lifelineUsed);
-              const walletHistory = currentUser.walletHistory || [];
 
               return (
                 <div className="bg-gradient-to-br from-slate-900/90 via-slate-900/80 to-emerald-950/40 rounded-2xl border border-emerald-700/40 p-5 shadow-xl space-y-4 relative overflow-hidden animate-fadeIn">
-                  <div className="absolute top-0 right-0 w-36 h-36 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
-
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
                     <div className="flex items-center gap-2.5">
                       <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-600 flex items-center justify-center text-white shadow-md">
@@ -1057,7 +923,6 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* 2 Live Counters */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-3.5 text-center space-y-1">
                       <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider block">
@@ -1088,9 +953,7 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* ------------------------------------------------------------- */}
-                  {/* 📜 MY PAYMENT & WALLET TRANSACTION HISTORY                    */}
-                  {/* ------------------------------------------------------------- */}
+                  {/* MY PAYMENT & WALLET TRANSACTION HISTORY (Deduplicated) */}
                   {(() => {
                     interface CombinedFinancialTxn {
                       id: string;
@@ -1106,12 +969,14 @@ export const UserProfileModal: React.FC = () => {
                     const combinedTransactions: CombinedFinancialTxn[] = [];
                     const seenKeys = new Set<string>();
 
-                    // 1. Wallet credits and debits from user.walletHistory
                     (currentUser.walletHistory || []).forEach((w) => {
                       const isCredit = w.type === 'credit';
                       const key = (w.paymentReferenceId || w.id || '').trim();
+                      const timeBucket = (w.timestamp || '').slice(0, 16);
+                      const dedupKey = `${w.type}_${w.amount}_${timeBucket}`;
+                      if (seenKeys.has(key) || seenKeys.has(dedupKey)) return;
                       if (key) seenKeys.add(key);
-                      if (w.id) seenKeys.add(w.id);
+                      seenKeys.add(dedupKey);
 
                       combinedTransactions.push({
                         id: w.id,
@@ -1127,20 +992,17 @@ export const UserProfileModal: React.FC = () => {
                       });
                     });
 
-                    // 2. Gateway payments from paymentsLedger
                     (paymentsLedger || [])
                       .filter((p) => {
-                        // Exclude dummy transactions
                         if (['TXN-WB-101', 'TXN-WB-301'].includes(p.id)) return false;
-                        if (p.type === 'Admin Wallet Adjustment') return false; // Already represented in walletHistory
+                        if (p.type === 'Admin Wallet Adjustment' || p.type === 'Wallet Credit Redeemed') return false;
                         return p.companionToken === currentUser.userToken || p.bookerToken === currentUser.userToken;
                       })
                       .forEach((p) => {
                         const refKey = (p.paymentReferenceId || p.razorpayRefId || p.id || '').trim();
-                        if (refKey && seenKeys.has(refKey)) return;
-                        if (p.id && seenKeys.has(p.id)) return;
-                        if (refKey) seenKeys.add(refKey);
-                        if (p.id) seenKeys.add(p.id);
+                        const timeBucket = (p.timestamp || '').slice(0, 16);
+                        const dedupKey = `debit_${p.feeAmount}_${timeBucket}`;
+                        if (seenKeys.has(refKey) || seenKeys.has(dedupKey)) return;
 
                         const isPro = p.type === '1-Month Pro Subscription';
                         const isPenalty = p.type === 'Cancellation Penalty';
@@ -1148,12 +1010,13 @@ export const UserProfileModal: React.FC = () => {
                         const isCompanion = p.companionToken === currentUser.userToken;
                         const isBooker = p.bookerToken === currentUser.userToken;
 
-                        // Only show Acceptance Fee to Companion
                         if (isAcceptanceFee && !isCompanion) return;
-                        // Only show Cancellation Penalty to Booker
                         if (isPenalty && !isBooker) return;
 
-                        let typeDisplay = 'Outing Fee Recorded';
+                        if (refKey) seenKeys.add(refKey);
+                        seenKeys.add(dedupKey);
+
+                        let typeDisplay = 'Acceptance Fee Paid';
                         let badgeStyle = 'bg-cyan-950 text-cyan-300 border-cyan-600/70';
                         let details = `${p.outingTitle || 'Outing Acceptance'} (${p.status})`;
 
@@ -1165,9 +1028,6 @@ export const UserProfileModal: React.FC = () => {
                           typeDisplay = 'Cancellation Penalty Paid';
                           badgeStyle = 'bg-rose-950 text-rose-300 border-rose-600/70';
                           details = `Cancellation Penalty Fee (₹${p.feeAmount})`;
-                        } else if (isAcceptanceFee) {
-                          typeDisplay = 'Acceptance Fee Paid';
-                          badgeStyle = 'bg-cyan-950 text-cyan-300 border-cyan-600/70';
                         }
 
                         combinedTransactions.push({
@@ -1182,7 +1042,6 @@ export const UserProfileModal: React.FC = () => {
                         });
                       });
 
-                    // Sort newest first
                     combinedTransactions.sort(
                       (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
                     );
@@ -1198,14 +1057,11 @@ export const UserProfileModal: React.FC = () => {
                               {combinedTransactions.length} Event{combinedTransactions.length !== 1 ? 's' : ''}
                             </span>
                           </div>
-                          <span className="text-[11px] text-slate-400">
-                            Real-time Razorpay payments, fee waivers &amp; wallet credits
-                          </span>
                         </div>
 
                         {combinedTransactions.length === 0 ? (
                           <div className="p-5 text-center bg-slate-950/60 rounded-xl border border-dashed border-slate-800 text-xs text-slate-400">
-                            No financial transactions or wallet credits recorded yet. When you accept bookings, pay acceptance fees, or receive cancellation fee credits, they will appear chronologically here.
+                            No financial transactions or wallet credits recorded yet.
                           </div>
                         ) : (
                           <div className="border border-slate-800/90 rounded-xl overflow-hidden bg-slate-950/80">
@@ -1266,18 +1122,11 @@ export const UserProfileModal: React.FC = () => {
                       </div>
                     );
                   })()}
-
-                  {/* Anti-Abuse & Zero-Loss Rule Footnote */}
-                  <p className="text-[11px] text-slate-400 leading-relaxed italic bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
-                    💡 <strong>Protection &amp; Fairness Policy:</strong> If a Booker cancels a confirmed outing, 100% of your paid Platform Fee is immediately credited to your Fee Wallet with zero lifeline deduction. If you cancel an outing with &gt;3 hours notice, your 1/1 Monthly Emergency Lifeline safeguards your fee as reusable credit for future bookings.
-                  </p>
                 </div>
               );
             })()}
 
-            {/* ============================================================= */}
-            {/* TAB 2: ⚙️ EDIT PROFILE & ACCOUNT SETTINGS                     */}
-            {/* ============================================================= */}
+            {/* TAB 2: EDIT PROFILE & ACCOUNT SETTINGS */}
             {activeTab === 'edit_profile' && (
               <div className="border border-slate-800 rounded-2xl overflow-hidden shadow-xl bg-slate-900/80 animate-fadeIn">
                 <div className="p-4 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between">
@@ -1303,14 +1152,13 @@ export const UserProfileModal: React.FC = () => {
 
                 <form onSubmit={handleSaveProfile} className="p-5 sm:p-6 space-y-5">
                   
-                  {/* 1. Upload / Change Profile Picture */}
+                  {/* 1. Profile Picture */}
                   <div className="bg-slate-950/80 rounded-2xl p-4 border border-slate-800 space-y-3">
                     <div className="flex items-center justify-between">
                       <label className="text-xs font-bold text-white flex items-center gap-1.5">
                         <Camera className="w-4 h-4 text-cyan-400" />
                         <span>Profile Picture</span>
                       </label>
-                      <span className="text-[10px] text-slate-500">Native file upload (JPG, PNG, WebP)</span>
                     </div>
 
                     <div className="flex items-center gap-4">
@@ -1342,25 +1190,16 @@ export const UserProfileModal: React.FC = () => {
                             onChange={handleAvatarFileChange}
                             className="hidden"
                           />
-                          {avatarUrl && avatarUrl !== currentUser.avatarUrl && (
-                            <span className="text-[11px] text-emerald-300 font-semibold bg-emerald-950/80 border border-emerald-700/60 px-2.5 py-1 rounded-lg flex items-center gap-1">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                              New photo loaded
-                            </span>
-                          )}
                         </div>
-                        <p className="text-[11px] text-slate-400">
-                          Upload from your device. Displays on Explore profile cards.
-                        </p>
                       </div>
                     </div>
                   </div>
 
-                  {/* 2. Legal Name, Age (21+) & Gender */}
+                  {/* 2. Legal Name, Age & Gender */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="sm:col-span-1 space-y-1">
                       <label className="text-xs font-bold text-slate-300 block">
-                        Full Legal Name
+                        Full Legal Name (As per ID)
                       </label>
                       <input
                         type="text"
@@ -1434,7 +1273,7 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* 4. Primary Regional Hub & Preferred Areas */}
+                  {/* 4. Regional Hub & Preferred Areas */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-300 block">
@@ -1463,13 +1302,13 @@ export const UserProfileModal: React.FC = () => {
                         type="text"
                         value={serviceAreasStr}
                         onChange={(e) => setServiceAreasStr(e.target.value)}
-                        placeholder="e.g. Park Street, South City, Saheed Nagar"
+                        placeholder="e.g. Park Street, South City"
                         className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-medium focus:outline-none focus:border-cyan-500"
                       />
                     </div>
                   </div>
 
-                  {/* 5. Full Residential Address */}
+                  {/* 5. Residential Address */}
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
                       <Home className="w-3.5 h-3.5 text-cyan-400" />
@@ -1479,13 +1318,12 @@ export const UserProfileModal: React.FC = () => {
                       rows={2}
                       value={residentialAddress}
                       onChange={(e) => setResidentialAddress(e.target.value)}
-                      placeholder="Flat / House No., Street, Area, Landmark, PIN code"
                       className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-cyan-500 leading-relaxed resize-none"
                       required
                     />
                   </div>
 
-                  {/* 6. Spoken Languages */}
+                  {/* 6. Languages */}
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-300 block">
                       Spoken Languages (Comma separated)
@@ -1494,13 +1332,12 @@ export const UserProfileModal: React.FC = () => {
                       type="text"
                       value={languagesStr}
                       onChange={(e) => setLanguagesStr(e.target.value)}
-                      placeholder="Bengali, English, Hindi, Odia"
                       className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-medium focus:outline-none focus:border-cyan-500"
                       required
                     />
                   </div>
 
-                  {/* 7. Public Bio */}
+                  {/* 7. Bio */}
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-300 block">
                       Public Bio &amp; Topics of Conversation
@@ -1514,9 +1351,7 @@ export const UserProfileModal: React.FC = () => {
                     />
                   </div>
 
-                  {/* ------------------------------------------------------------- */}
-                  {/* ADDRESS VERIFICATION (GOVERNMENT ID) - 100% AUTOMATED & TRANSPARENT */}
-                  {/* ------------------------------------------------------------- */}
+                  {/* ADDRESS & GOVERNMENT ID VERIFICATION */}
                   <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4 shadow-inner">
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
                       <div className="flex items-center gap-2">
@@ -1526,7 +1361,7 @@ export const UserProfileModal: React.FC = () => {
                             Address &amp; Government ID Verification
                           </span>
                           <span className="text-[10px] text-slate-400">
-                            Automatic instant verification: Uploading your document immediately makes your profile live in Explore.
+                            Enter valid Government ID number and upload clear ID / DigiLocker image for instant verification.
                           </span>
                         </div>
                       </div>
@@ -1540,7 +1375,6 @@ export const UserProfileModal: React.FC = () => {
                       </span>
                     </div>
 
-                    {/* Automated Validation Error Alert */}
                     {docValidationError && (
                       <div className="p-3 bg-rose-950/90 border border-rose-800 rounded-xl text-rose-200 text-xs flex items-start gap-2 shadow-md animate-fadeIn">
                         <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
@@ -1551,11 +1385,10 @@ export const UserProfileModal: React.FC = () => {
                     {isValidatingDoc && (
                       <div className="p-2.5 bg-indigo-950/70 border border-indigo-800 rounded-xl text-cyan-300 text-xs flex items-center gap-2">
                         <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
-                        <span>Validating document structure &amp; checking image readability...</span>
+                        <span>Compressing &amp; saving document...</span>
                       </div>
                     )}
 
-                    {/* Document Type Selector (Voter ID / Driving License / PAN Card) */}
                     <div className="space-y-1.5">
                       <label className="text-[11px] font-bold text-slate-300 block">
                         Government Document Type
@@ -1574,7 +1407,6 @@ export const UserProfileModal: React.FC = () => {
                       </select>
                     </div>
 
-                    {/* Government Document Registration Number Input */}
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between">
                         <label className="text-[11px] font-bold text-slate-300 block">
@@ -1589,7 +1421,7 @@ export const UserProfileModal: React.FC = () => {
                             ? 'Format: ABCDE1234F'
                             : documentType.includes('Voter')
                             ? 'Format: ABC1234567'
-                            : 'Format: WB01 20180012345'}
+                            : 'Format: WB17 20250001080'}
                         </span>
                       </div>
                       <input
@@ -1604,13 +1436,12 @@ export const UserProfileModal: React.FC = () => {
                             ? 'ABCDE1234F'
                             : documentType.includes('Voter')
                             ? 'ABC1234567'
-                            : 'WB01 20180012345'
+                            : 'WB17 20250001080'
                         }
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono font-bold uppercase tracking-wider focus:outline-none focus:border-cyan-500 placeholder-slate-600"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono font-bold uppercase tracking-wider focus:outline-none focus:border-cyan-500"
                       />
                     </div>
 
-                    {/* Transparency Preview: Currently Uploaded ID Document */}
                     <div className="space-y-2 pt-1">
                       <label className="text-[11px] font-bold text-slate-300 block">
                         Uploaded Government ID Document
@@ -1632,7 +1463,7 @@ export const UserProfileModal: React.FC = () => {
                               </span>
                               <span className="text-[10px] text-emerald-300 font-semibold flex items-center gap-1 mt-0.5">
                                 <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                <span>Verified &amp; Active</span>
+                                <span>Uploaded &amp; Ready</span>
                               </span>
                             </div>
                           </div>
@@ -1672,7 +1503,7 @@ export const UserProfileModal: React.FC = () => {
                                 No Government ID Document Uploaded Yet
                               </span>
                               <span className="text-[10px] text-amber-300/80">
-                                Upload a photo of your Voter ID, Driving License, or PAN Card to verify your account immediately.
+                                Upload a photo or DigiLocker copy of your Voter ID, Driving License, or PAN Card.
                               </span>
                             </div>
                           </div>
@@ -1696,7 +1527,6 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Form Bottom Actions: Save Profile */}
                   <div className="flex items-center justify-between pt-4 border-t border-slate-800">
                     <p className="text-[11px] text-slate-400">
                       Changes update your public companion card immediately.
@@ -1712,9 +1542,7 @@ export const UserProfileModal: React.FC = () => {
                   </div>
                 </form>
 
-                {/* ============================================================= */}
-                {/* 🔒 DELETE ACCOUNT & WITHDRAW CONSENT (DPDP ACT 2023 1-YR HOLD) */}
-                {/* ============================================================= */}
+                {/* DELETE ACCOUNT SECTION */}
                 <div className="p-4 sm:p-5 bg-gradient-to-br from-rose-950/30 via-slate-900/80 to-slate-950 border-t border-rose-900/40 space-y-3.5">
                   <div className="flex items-start gap-3">
                     <div className="w-9 h-9 rounded-xl bg-rose-950/90 border border-rose-700/60 flex items-center justify-center text-rose-400 shrink-0">
@@ -1744,28 +1572,8 @@ export const UserProfileModal: React.FC = () => {
                         )}
                       </div>
 
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        Under India'''s Digital Personal Data Protection (DPDP) Act 2023 and the Information Technology Act 2000, you may revoke consent and delete your account. Your profile and companion packages will be immediately removed from Public Explore.
-                      </p>
-
-                      <div className="text-[11px] text-slate-400 bg-slate-950/80 p-3 rounded-xl border border-slate-800/90 space-y-1">
-                        <div className="flex items-center gap-1.5 text-slate-300 font-semibold">
-                          <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                          <span>Statutory 1-Year Legal Archive Hold (365 Days):</span>
-                        </div>
-                        <p className="pl-5 text-slate-400">
-                          • <strong>Immediate Public Removal:</strong> Your profile, contact records, and activity packages are deleted from Public Explore immediately, and your session is terminated.
-                        </p>
-                        <p className="pl-5 text-slate-400">
-                          • <strong>Safety &amp; Compliance Freeze:</strong> To prevent fraud and comply with statutory incident review, verified account credentials enter a 365-day legal archive hold.
-                        </p>
-                        <p className="pl-5 text-slate-400">
-                          • <strong>Automated 1-Year Purge:</strong> Once the 365-day hold period concludes, all data is automatically and permanently purged with zero manual action required.
-                        </p>
-                      </div>
-
                       {deleteError && (
-                        <div className="p-3 bg-rose-950/90 border border-rose-600 rounded-xl text-xs text-rose-200 flex items-start gap-2 animate-shake">
+                        <div className="p-3 bg-rose-950/90 border border-rose-600 rounded-xl text-xs text-rose-200 flex items-start gap-2">
                           <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                           <span>{deleteError}</span>
                         </div>
@@ -1773,51 +1581,40 @@ export const UserProfileModal: React.FC = () => {
 
                       {showDeleteConfirm && (
                         <div className="mt-3 p-4 bg-rose-950/40 border border-rose-700/80 rounded-xl space-y-3 animate-fadeIn">
-                          <div className="space-y-1">
-                            <label className="text-xs font-bold text-rose-200 block">
-                              Optional Deletion Reason / Feedback:
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="e.g., Relocating to new city, taking a break, privacy preferences..."
-                              value={deleteReason}
-                              onChange={(e) => setDeleteReason(e.target.value)}
-                              className="w-full px-3 py-2 bg-slate-950 border border-rose-800/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500"
-                            />
-                          </div>
-
-                          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pt-2 border-t border-rose-900/60">
-                            <span className="text-[11px] text-rose-300 font-medium">
-                              Are you sure? You will be logged out and public profile hidden immediately.
-                            </span>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowDeleteConfirm(false);
-                                  setDeleteError(null);
-                                }}
-                                className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setDeleteError(null);
-                                  setIsDeleting(true);
-                                  const res = deleteUserAccountAndWithdrawConsent(deleteReason.trim() || undefined);
-                                  setIsDeleting(false);
-                                  if (!res.success) {
-                                    setDeleteError(res.error || 'Failed to delete account.');
-                                  }
-                                }}
-                                disabled={isDeleting}
-                                className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer disabled:opacity-50"
-                              >
-                                {isDeleting ? 'Archiving...' : 'Yes, Delete My Account'}
-                              </button>
-                            </div>
+                          <input
+                            type="text"
+                            placeholder="Optional Deletion Reason..."
+                            value={deleteReason}
+                            onChange={(e) => setDeleteReason(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-950 border border-rose-800/80 rounded-xl text-xs text-white"
+                          />
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowDeleteConfirm(false);
+                                setDeleteError(null);
+                              }}
+                              className="px-3 py-1.5 bg-slate-900 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeleteError(null);
+                                setIsDeleting(true);
+                                const res = deleteUserAccountAndWithdrawConsent(deleteReason.trim() || undefined);
+                                setIsDeleting(false);
+                                if (!res.success) {
+                                  setDeleteError(res.error || 'Failed to delete account.');
+                                }
+                              }}
+                              disabled={isDeleting}
+                              className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold cursor-pointer"
+                            >
+                              {isDeleting ? 'Archiving...' : 'Yes, Delete My Account'}
+                            </button>
                           </div>
                         </div>
                       )}
@@ -1827,16 +1624,12 @@ export const UserProfileModal: React.FC = () => {
               </div>
             )}
 
-            {/* ============================================================= */}
-            {/* TAB 5: 👑 UPGRADE TO PRO (CIRQLR PRO MEMBERSHIP)              */}
-            {/* ============================================================= */}
+            {/* TAB 5: UPGRADE TO PRO */}
             {activeTab === 'pro' && (
               <div className="bg-gradient-to-br from-slate-900/90 via-slate-900/80 to-amber-950/30 rounded-2xl border border-amber-600/40 p-5 sm:p-6 shadow-xl space-y-5 relative overflow-hidden animate-fadeIn">
-                <div className="absolute top-0 right-0 w-44 h-44 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
-
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-600 flex items-center justify-center text-slate-950 font-black shadow-lg shadow-amber-950/50">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-600 flex items-center justify-center text-slate-950 font-black shadow-lg">
                       <Crown className="w-5 h-5 text-slate-950 fill-slate-950" />
                     </div>
                     <div>
@@ -1845,7 +1638,7 @@ export const UserProfileModal: React.FC = () => {
                           Cirqlr Pro Companion
                         </h4>
                         {isPro ? (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 uppercase tracking-wider">
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 uppercase">
                             Active Member
                           </span>
                         ) : (
@@ -1855,7 +1648,7 @@ export const UserProfileModal: React.FC = () => {
                         )}
                       </div>
                       <p className="text-xs text-slate-400 mt-0.5">
-                        Stand out with gold verification, zero platform commission, and premier client visibility.
+                        Stand out with a Google-style Pro profile ring, transparent Golden Cards, and unlimited packages.
                       </p>
                     </div>
                   </div>
@@ -1869,69 +1662,10 @@ export const UserProfileModal: React.FC = () => {
                     <button
                       type="button"
                       onClick={handleSubscribePro}
-                      className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-600 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-lg shadow-amber-950/60 cursor-pointer active:scale-95 shrink-0"
+                      className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-600 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-lg cursor-pointer shrink-0"
                     >
                       <Crown className="w-4 h-4 fill-slate-950" />
                       <span>Upgrade to Pro (₹{finalPrice})</span>
-                    </button>
-                  )}
-                </div>
-
-                {/* Benefits Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex items-start gap-3">
-                    <span className="text-xl">👑</span>
-                    <div>
-                      <h5 className="text-xs font-bold text-white">Exclusive Gold Pro Badge</h5>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        Display a verified golden crown badge on your companion profile and search results.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex items-start gap-3">
-                    <span className="text-xl">🚀</span>
-                    <div>
-                      <h5 className="text-xs font-bold text-white">Top Discovery Placement</h5>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        Rank at the top of Booker search filters in your city for 3x higher outing bookings.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex items-start gap-3">
-                    <span className="text-xl">🛡️</span>
-                    <div>
-                      <h5 className="text-xs font-bold text-white">Priority Concierge Support</h5>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        24/7 direct WhatsApp safety assistance &amp; expedited verification checks.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5 flex items-start gap-3">
-                    <span className="text-xl">⚡</span>
-                    <div>
-                      <h5 className="text-xs font-bold text-white">Unlimited Gallery &amp; Custom Bio</h5>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        Showcase high-resolution photos and detailed outing specialties without restrictions.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Pro pricing note */}
-                <div className="bg-slate-950/40 border border-slate-800/60 rounded-xl p-3 flex items-center justify-between text-[11px] text-slate-400">
-                  <span>
-                    Billed monthly at ₹{finalPrice} • Cancel anytime from your account settings.
-                  </span>
-                  {!isPro && (
-                    <button
-                      type="button"
-                      onClick={handleSubscribePro}
-                      className="text-amber-400 hover:text-amber-300 font-bold underline cursor-pointer"
-                    >
-                      Subscribe Now →
                     </button>
                   )}
                 </div>
@@ -1949,16 +1683,11 @@ export const UserProfileModal: React.FC = () => {
                   setIsProfileModalOpen(false);
                   logOutUser();
                 }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 hover:text-white border border-rose-800/80 rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer active:scale-95"
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 hover:text-white border border-rose-800/80 rounded-xl text-xs font-bold transition-all cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Log Out</span>
               </button>
-
-              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] text-slate-400">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Platform Safety: Strictly 21+ &amp; Public Venues Only</span>
-              </span>
             </div>
 
             <div className="flex items-center gap-2">
@@ -1968,7 +1697,7 @@ export const UserProfileModal: React.FC = () => {
                   setIsProfileModalOpen(false);
                   openFeedbackModal();
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-700/80 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-700/80 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 <MessageSquare className="w-3.5 h-3.5 text-cyan-400" />
                 <span>Give Feedback</span>
@@ -1986,9 +1715,6 @@ export const UserProfileModal: React.FC = () => {
         </div>
       </div>
 
-      {/* ========================================================= */}
-      {/* FULL-SIZE IMAGE LIGHTBOX MODAL (FOR ID SCANS & GALLERY)   */}
-      {/* ========================================================= */}
       {lightboxImageUrl && (
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/90 backdrop-blur-md p-4 animate-fadeIn">
           <div className="relative max-w-4xl max-h-[90vh] bg-slate-900 rounded-3xl overflow-hidden border border-slate-700 shadow-2xl flex flex-col">
@@ -2000,7 +1726,7 @@ export const UserProfileModal: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setLightboxImageUrl(null)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
