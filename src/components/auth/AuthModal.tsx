@@ -647,7 +647,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setStep3Error('');
     try {
       // 1. Run automated image validation (checks aspect ratio, contrast/luminance variance, and rejects random selfies)
-      const validation = await validateIdDocumentImage(file);
+      const validation = await validateIdDocumentImage(file, fullName, documentType);
       if (!validation.isValid) {
         setStep3Error(validation.error || EXACT_IMAGE_ERROR);
         setDocumentImageUrl('');
@@ -665,7 +665,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       const reader = new FileReader();
       reader.onload = async () => {
         if (typeof reader.result === 'string') {
-          const val = await validateIdDocumentImage(reader.result);
+          const val = await validateIdDocumentImage(reader.result, fullName, documentType);
           if (!val.isValid) {
             setStep3Error(val.error || EXACT_IMAGE_ERROR);
             setDocumentImageUrl('');
@@ -699,7 +699,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       return;
     }
     // Automated image validation
-    const imgValidation = await validateIdDocumentImage(documentImageUrl);
+    const imgValidation = await validateIdDocumentImage(documentImageUrl, fullName, documentType);
     if (!imgValidation.isValid) {
       setStep3Error(imgValidation.error || EXACT_IMAGE_ERROR);
       return;

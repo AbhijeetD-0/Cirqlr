@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useMarketplace } from '../../context/MarketplaceContext';
 import { AllowedDocumentType, UserCity } from '../../types/marketplace';
 import { saveUserToSheet } from '../../services/googleSheetsService';
@@ -171,9 +171,16 @@ export const UserProfileModal: React.FC = () => {
   // Razorpay payment hook
   const { openCheckout: openProCheckout } = useRazorpayPayment();
 
-  // Sync state when modal opens or user updates
+  const prevModalOpenRef = useRef(false);
+  const activeUserTokenRef = useRef<string | null>(null);
+
+  // Sync state only when modal opens or active user identity switches
   useEffect(() => {
-    if (isProfileModalOpen && currentUser) {
+    const isOpening = isProfileModalOpen && !prevModalOpenRef.current;
+    const isUserSwitched = currentUser && currentUser.userToken !== activeUserTokenRef.current;
+
+    if (isProfileModalOpen && currentUser && (isOpening || isUserSwitched)) {
+      activeUserTokenRef.current = currentUser.userToken;
       setFullName(currentUser.fullName);
       setEmail(currentUser.email || '');
       setAge(currentUser.age);
@@ -190,7 +197,8 @@ export const UserProfileModal: React.FC = () => {
       setAvatarUrl(currentUser.avatarUrl || '');
       setSaveSuccess(false);
     }
-  }, [isProfileModalOpen, currentUser]);
+    prevModalOpenRef.current = isProfileModalOpen;
+  }, [isProfileModalOpen, currentUser?.userToken]);
 
   if (!isProfileModalOpen || !currentUser) return null;
 
@@ -213,7 +221,7 @@ export const UserProfileModal: React.FC = () => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
 
-    Promise.all(files.map((file) => compressImageFile(file, 600, 600, 0.72))).then((compressedList) => {
+    Promise.all(files.map((file) => compressImageFile(file, 600, 600, 0.6))).then((compressedList) => {
       const validPhotos = compressedList.filter(Boolean);
       const updatedGallery = [...galleryPhotos, ...validPhotos];
       updateCurrentUserProfile({ publicGallery: updatedGallery });
@@ -236,7 +244,7 @@ export const UserProfileModal: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const compressed = await compressImageFile(file, 500, 500, 0.72);
+      const compressed = await compressImageFile(file, 500, 500, 0.6);
       if (compressed) {
         setAvatarUrl(compressed);
       }
@@ -256,8 +264,8 @@ export const UserProfileModal: React.FC = () => {
     setDocValidationError(null);
     setIsValidatingDoc(true);
     try {
-      // 1. Run automated image validation (checks aspect ratio, contrast/luminance variance, and rejects random selfies)
-      const validation = await validateIdDocumentImage(file);
+      // 1. Run automated image validation (checks aspect ratio, contrast/luminance variance, official keywords and legal name)
+      const validation = await validateIdDocumentImage(file, fullName, documentType);
       if (!validation.isValid) {
         setDocValidationError(validation.error || EXACT_IMAGE_ERROR);
         e.target.value = '';
@@ -265,7 +273,7 @@ export const UserProfileModal: React.FC = () => {
         return;
       }
 
-      const compressed = await compressImageFile(file, 800, 800, 0.75);
+      const compressed = await compressImageFile(file, 600, 600, 0.6);
       if (compressed) {
         setDocumentImageUrl(compressed);
         if (documentIdNumber.trim()) {
@@ -288,7 +296,7 @@ export const UserProfileModal: React.FC = () => {
       reader.onload = async () => {
         if (typeof reader.result === 'string') {
           const uploadedDataUrl = reader.result;
-          const val = await validateIdDocumentImage(uploadedDataUrl);
+          const val = await validateIdDocumentImage(uploadedDataUrl, fullName, documentType);
           if (!val.isValid) {
             setDocValidationError(val.error || EXACT_IMAGE_ERROR);
             setIsValidatingDoc(false);
@@ -321,6 +329,18 @@ export const UserProfileModal: React.FC = () => {
     e.preventDefault();
     setDocValidationError(null);
 
+    const trimmedName = fullName.trim();
+    if (!trimmedName) {
+      setDocValidationError('Full Legal Name cannot be empty.');
+      return;
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setDocValidationError('Please enter a valid Gmail / Email address (e.g. name@gmail.com).');
+      return;
+    }
+
     const parsedLanguages = languagesStr
       .split(',')
       .map((l) => l.trim())
@@ -349,7 +369,7 @@ export const UserProfileModal: React.FC = () => {
         }
       }
       if (documentImageUrl.trim()) {
-        const imgVal = await validateIdDocumentImage(documentImageUrl);
+        const imgVal = await validateIdDocumentImage(documentImageUrl, trimmedName, documentType);
         if (!imgVal.isValid) {
           setDocValidationError(imgVal.error || EXACT_IMAGE_ERROR);
           return;
@@ -358,13 +378,12 @@ export const UserProfileModal: React.FC = () => {
       }
     }
 
-    const trimmedName = fullName.trim();
     const trimmedAvatar = avatarUrl.trim() || currentUser.avatarUrl;
 
     updateCurrentUserProfile({
       fullName: trimmedName,
       name: trimmedName,
-      email: email.trim().toLowerCase(),
+      email: trimmedEmail,
       age: Math.max(21, Number(age)),
       gender,
       city,

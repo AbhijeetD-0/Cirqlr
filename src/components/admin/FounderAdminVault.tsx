@@ -79,6 +79,7 @@ export const FounderAdminVault: React.FC = () => {
     resolveBookingDisputeRefundAndBlock,
     addAuditLog,
     sendAdminBroadcast,
+    purgeDuplicateTransactions,
   } = useMarketplace();
 
   const [activeTab, setActiveTab] = useState<AdminTab>('fees');
@@ -282,11 +283,29 @@ export const FounderAdminVault: React.FC = () => {
   const [resolutionNote, setResolutionNote] = useState<string>('');
   const [resolutionAction, setResolutionAction] = useState<AccountStatus>('Warned');
 
-  // Ledger stats
-  const onHoldPayments = paymentsLedger.filter((p) => p.status === 'ON HOLD (Check Razorpay)');
-  const refundDuePayments = paymentsLedger.filter((p) => p.status === 'REFUND DUE (Cancelled Booking)');
-  const totalVerifiedRevenue = paymentsLedger
-    .filter((p) => p.status === 'VERIFIED & RELEASED')
+  // Prune & Deduplicate Transaction Logs State
+  const [isPurgingLogs, setIsPurgingLogs] = useState<boolean>(false);
+  const [purgeToast, setPurgeToast] = useState<string | null>(null);
+
+  // Filter out legacy dummy entries and deduplicate same-timestamp records
+  const dedupedPaymentsLedger = React.useMemo(() => {
+    const seen = new Set<string>();
+    return (paymentsLedger || []).filter((txn) => {
+      if (['TXN-WB-101', 'TXN-WB-301'].includes(txn.id)) return false;
+      const refKey = (txn.paymentReferenceId || txn.razorpayRefId || txn.id || '').trim();
+      const timeKey = (txn.timestamp || '').slice(0, 16);
+      const uniqueKey = `${refKey}_${txn.type}_${timeKey}`;
+      if (seen.has(uniqueKey)) return false;
+      seen.add(uniqueKey);
+      return true;
+    });
+  }, [paymentsLedger]);
+
+  // Ledger stats computed strictly on deduplicated clean entries
+  const onHoldPayments = dedupedPaymentsLedger.filter((p) => p.status === 'ON HOLD (Check Razorpay)');
+  const refundDuePayments = dedupedPaymentsLedger.filter((p) => p.status === 'REFUND DUE (Cancelled Booking)');
+  const totalVerifiedRevenue = dedupedPaymentsLedger
+    .filter((p) => p.status === 'VERIFIED & RELEASED' && p.type !== 'Wallet Credit Redeemed')
     .reduce((sum, p) => sum + p.feeAmount, 0);
   const totalOnHoldAmount = onHoldPayments.reduce((sum, p) => sum + p.feeAmount, 0);
   const totalRefundDueAmount = refundDuePayments.reduce((sum, p) => sum + p.feeAmount, 0);
@@ -803,17 +822,43 @@ export const FounderAdminVault: React.FC = () => {
                 <div>
                   <h2 className="text-lg font-bold text-white flex items-center gap-2">
                     <CreditCard className="w-5 h-5 text-indigo-400" />
-                    Incoming Payment Transactions & Hold Ledger
+                    Incoming Payment Transactions &amp; Hold Ledger
                   </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
                     Verify incoming Razorpay reference IDs. Approving an On-Hold payment confirms the booking and unlocks the E2E encrypted chat.
                   </p>
                 </div>
 
-                <span className="text-xs font-mono text-slate-400">
-                  {paymentsLedger.length} Records
-                </span>
+                <div className="flex items-center gap-2 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsPurgingLogs(true);
+                      const count = await purgeDuplicateTransactions();
+                      setIsPurgingLogs(false);
+                      setPurgeToast(`Purged ${count} duplicate or old transaction records from Firestore.`);
+                      setTimeout(() => setPurgeToast(null), 3500);
+                    }}
+                    disabled={isPurgingLogs}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-rose-300 hover:text-white border border-rose-900/60 rounded-xl text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
+                    title="Purge duplicate and legacy dummy records from Firestore transactions"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    <span>{isPurgingLogs ? 'Purging...' : 'Clear Old & Duplicate Logs'}</span>
+                  </button>
+
+                  <span className="text-xs font-mono text-slate-400 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+                    {dedupedPaymentsLedger.length} Records
+                  </span>
+                </div>
               </div>
+
+              {purgeToast && (
+                <div className="p-3 bg-emerald-950/80 border border-emerald-800 text-emerald-300 rounded-xl text-xs font-bold flex items-center gap-2 animate-fadeIn">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{purgeToast}</span>
+                </div>
+              )}
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs border-collapse">
@@ -832,7 +877,7 @@ export const FounderAdminVault: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/80">
-                    {paymentsLedger.map((txn) => {
+                    {dedupedPaymentsLedger.map((txn) => {
                       const companionUser = usersAndCompanions.find(
                         (u) => u.userToken === txn.companionToken
                       );

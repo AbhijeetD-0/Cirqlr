@@ -220,7 +220,7 @@ export interface PaymentLedgerEntry {
   paymentReferenceId?: string; // Unified canonical payment/txn ID
   bookingId?: string;
   bookingToken?: string;
-  type: 'Booking Acceptance Fee' | '1-Month Pro Subscription' | 'Cancellation Penalty' | 'Admin Wallet Adjustment';
+  type: 'Booking Acceptance Fee' | '1-Month Pro Subscription' | 'Cancellation Penalty' | 'Admin Wallet Adjustment' | 'Wallet Credit Redeemed';
   companionToken: string;
   companionName: string;
   bookerToken?: string;
@@ -229,10 +229,12 @@ export interface PaymentLedgerEntry {
   grossOutingValue?: number;
   effectiveFeePercent?: number;
   feeAmount: number;
+  amount?: number;
   status: PaymentLedgerStatus;
   timestamp: string;
   verifiedAt?: string;
   refundNotes?: string;
+  details?: string;
 }
 
 export interface ChatMessage {

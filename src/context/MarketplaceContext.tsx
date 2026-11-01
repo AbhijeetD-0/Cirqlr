@@ -23,6 +23,7 @@ import {
 } from '../types/marketplace';
 import { collection, doc, setDoc, onSnapshot, deleteDoc } from 'firebase/firestore';
 import { db, cleanForFirestore } from '../lib/firebase';
+import { compressUserProfileImages } from '../utils/imageCompressor';
 import { sendBookingStatusEmail } from '../services/emailWebhookService';
 import { sendCancellationEmail } from '../services/cancellationAndOffersService';
 import { checkVenueSafety } from '../services/safetyFilterService';
@@ -194,6 +195,7 @@ interface MarketplaceContextType {
   submitAcceptanceFeePayment: (bookingId: string, razorpayRefId: string, creditUsed?: number) => void;
   confirmPaymentAndReleaseBooking: (ledgerId: string) => void;
   rejectPaymentAndFlagBooking: (ledgerId: string) => void;
+  purgeDuplicateTransactions: () => Promise<number>;
 
   // Encrypted Chat
   chatMessages: ChatMessage[];
@@ -658,13 +660,22 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const syncUserToFirestore = async (user: UserProfile) => {
     try {
       if (db && user.userToken) {
-        const cleanedUser = cleanForFirestore(user);
+        // Strip undefined fields and compress all base64 images to <= 600px, 0.6 quality (<80KB)
+        // to strictly guarantee Firestore documents never exceed 1MB limit and WebChannelConnection never fails
+        const compressedUser = await compressUserProfileImages(user);
+        const cleanedUser = cleanForFirestore(compressedUser);
         await setDoc(doc(db, 'users', user.userToken), cleanedUser, { merge: true });
-        // Also persist wallet document
+
+        // Also persist mirror wallet document with synced balances
+        const currentBal = user.cancellationCreditBalance ?? user.walletBalance ?? user.creditBalance ?? 0;
         const cleanedWallet = cleanForFirestore({
           userToken: user.userToken,
           userName: user.fullName,
-          cancellationCreditBalance: user.cancellationCreditBalance || 0,
+          balance: currentBal,
+          cancellationCreditBalance: currentBal,
+          walletBalance: currentBal,
+          creditBalance: currentBal,
+          availableCredit: currentBal,
           walletHistory: user.walletHistory || [],
           updatedAt: new Date().toISOString(),
         });
@@ -1992,16 +2003,18 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const updateCurrentUserProfile = (updates: Partial<UserProfile>) => {
     if (!currentUser) return;
-    const nameToSync = updates.fullName || updates.name || currentUser.fullName;
-    const imageToSync = updates.avatarUrl || updates.profileImage || currentUser.avatarUrl;
+    const nameToSync = (updates.fullName || updates.name || currentUser.fullName || '').trim();
+    const emailToSync = updates.email ? updates.email.trim().toLowerCase() : (currentUser.email || '').trim().toLowerCase();
+    const imageToSync = (updates.avatarUrl || updates.profileImage || currentUser.avatarUrl || '').trim();
 
     const updatedUser: UserProfile = {
       ...currentUser,
       ...updates,
-      fullName: nameToSync,
-      name: nameToSync,
-      avatarUrl: imageToSync,
-      profileImage: imageToSync,
+      fullName: nameToSync || currentUser.fullName,
+      name: nameToSync || currentUser.fullName,
+      email: emailToSync || currentUser.email,
+      avatarUrl: imageToSync || currentUser.avatarUrl,
+      profileImage: imageToSync || currentUser.avatarUrl,
     };
     setCurrentUser(updatedUser);
     setUsersAndCompanions((prev) => {
@@ -3535,41 +3548,76 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const booking = bookings.find((b) => b.id === bookingId);
     if (!booking) return;
 
-    const ledgerEntryId = `TXN-${Date.now()}`;
     const confirmedIso = new Date().toISOString();
     const liveFee = computeLiveBookingFee(booking, bookings, currentUser, platformSettings);
     const bookingAcceptanceFee = liveFee.finalPlatformFee;
     const netPaidViaGateway = Math.max(0, bookingAcceptanceFee - creditUsed);
+    const is100PercentCredit = creditUsed > 0 && netPaidViaGateway === 0;
 
-    // Canonical unified payment/transaction ID (pay_... for gateway or wlt_... for 100% wallet redemption)
+    // Canonical unified payment/transaction ID (pay_... for gateway or wlt_... for wallet redemption)
     const canonicalPaymentId = (razorpayRefId || '').startsWith('pay_') || (razorpayRefId || '').startsWith('wlt_')
       ? razorpayRefId
-      : (creditUsed > 0 && netPaidViaGateway === 0
+      : (is100PercentCredit
           ? `wlt_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`
           : `pay_${razorpayRefId}`);
 
-    const newLedgerEntry: PaymentLedgerEntry = {
-      id: ledgerEntryId,
-      razorpayRefId: canonicalPaymentId,
-      paymentReferenceId: canonicalPaymentId,
-      bookingId: booking.id,
-      bookingToken: booking.bookingToken,
-      type: 'Booking Acceptance Fee',
-      companionToken: booking.companionToken,
-      companionName: booking.companionName,
-      bookerToken: booking.bookerToken,
-      bookerName: booking.bookerName,
-      outingTitle: booking.activityTitle,
-      grossOutingValue: booking.totalOutingCost,
-      effectiveFeePercent: liveFee.effectiveFeePercent,
-      feeAmount: bookingAcceptanceFee,
-      status: 'VERIFIED & RELEASED',
-      timestamp: confirmedIso,
-      verifiedAt: confirmedIso,
-      refundNotes: creditUsed > 0 ? `₹${creditUsed} credit applied + ₹${netPaidViaGateway} via ${canonicalPaymentId}` : undefined,
-    };
+    let activeLedgerTxn: PaymentLedgerEntry;
 
-    setPaymentsLedger((prev) => [newLedgerEntry, ...prev]);
+    if (is100PercentCredit) {
+      // SCENARIO A: 100% Free Acceptance using Credit Wallet (₹0 Gateway Payment)
+      // Strictly ONE single debit transaction is logged. Zero duplicate acceptance fees or positive credit entries.
+      activeLedgerTxn = {
+        id: canonicalPaymentId,
+        razorpayRefId: canonicalPaymentId,
+        paymentReferenceId: canonicalPaymentId,
+        bookingId: booking.id,
+        bookingToken: booking.bookingToken,
+        type: 'Wallet Credit Redeemed',
+        companionToken: booking.companionToken,
+        companionName: booking.companionName,
+        bookerToken: booking.bookerToken,
+        bookerName: booking.bookerName,
+        outingTitle: booking.activityTitle,
+        grossOutingValue: booking.totalOutingCost,
+        effectiveFeePercent: liveFee.effectiveFeePercent,
+        feeAmount: creditUsed,
+        amount: creditUsed,
+        status: 'VERIFIED & RELEASED',
+        timestamp: confirmedIso,
+        verifiedAt: confirmedIso,
+        details: `Fee Credit Redeemed for Booking Acceptance (${booking.bookingToken})`,
+      };
+
+      setPaymentsLedger((prev) => [activeLedgerTxn, ...prev.filter((p) => p.id !== canonicalPaymentId && p.paymentReferenceId !== canonicalPaymentId)]);
+      syncTransactionToFirestore(activeLedgerTxn);
+    } else {
+      // SCENARIO B: Gateway Payment (Partial or 100% via Razorpay)
+      const ledgerEntryId = `TXN-${Date.now()}`;
+      activeLedgerTxn = {
+        id: ledgerEntryId,
+        razorpayRefId: canonicalPaymentId,
+        paymentReferenceId: canonicalPaymentId,
+        bookingId: booking.id,
+        bookingToken: booking.bookingToken,
+        type: 'Booking Acceptance Fee',
+        companionToken: booking.companionToken,
+        companionName: booking.companionName,
+        bookerToken: booking.bookerToken,
+        bookerName: booking.bookerName,
+        outingTitle: booking.activityTitle,
+        grossOutingValue: booking.totalOutingCost,
+        effectiveFeePercent: liveFee.effectiveFeePercent,
+        feeAmount: netPaidViaGateway,
+        amount: netPaidViaGateway,
+        status: 'VERIFIED & RELEASED',
+        timestamp: confirmedIso,
+        verifiedAt: confirmedIso,
+        refundNotes: creditUsed > 0 ? `₹${creditUsed} credit applied + ₹${netPaidViaGateway} via ${canonicalPaymentId}` : undefined,
+      };
+
+      setPaymentsLedger((prev) => [activeLedgerTxn, ...prev]);
+      syncTransactionToFirestore(activeLedgerTxn);
+    }
 
     // If credit was used, deduct it immediately from Companion's cancellationCreditBalance and record transaction history
     if (creditUsed > 0) {
@@ -3728,10 +3776,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Acceptance Fee Paid & Outing Confirmed',
-      `Payment ${razorpayRefId} (₹${booking.acceptanceFee} total, ₹${creditUsed} credit applied) confirmed for booking ${booking.bookingToken}. Outing is Confirmed and chat channel unlocked immediately.`
+      `Payment ${canonicalPaymentId} (₹${bookingAcceptanceFee} total, ₹${creditUsed} credit applied) confirmed for booking ${booking.bookingToken}. Outing is Confirmed and chat channel unlocked immediately.`
     );
 
-    syncTransactionToFirestore(newLedgerEntry);
     syncBookingToFirestore({
       ...booking,
       status: 'Confirmed' as const,
@@ -3870,6 +3917,45 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         `Transaction ${entry.razorpayRefId} rejected. Booking flagged as unpaid.`
       );
     }
+  };
+
+  const purgeDuplicateTransactions = async (): Promise<number> => {
+    if (!db) return 0;
+    const seen = new Set<string>();
+    const toDelete: string[] = [];
+
+    paymentsLedger.forEach((txn) => {
+      if (['TXN-WB-101', 'TXN-WB-301'].includes(txn.id)) {
+        toDelete.push(txn.id);
+        return;
+      }
+      const refKey = (txn.paymentReferenceId || txn.razorpayRefId || txn.id || '').trim();
+      const timeKey = (txn.timestamp || '').slice(0, 16);
+      const uniqueKey = `${refKey}_${txn.type}_${timeKey}`;
+      if (seen.has(uniqueKey)) {
+        toDelete.push(txn.id);
+      } else {
+        seen.add(uniqueKey);
+      }
+    });
+
+    for (const id of toDelete) {
+      try {
+        await deleteDoc(doc(db, 'transactions', id));
+      } catch (e) {
+        console.warn('[purgeDuplicateTransactions] delete note:', id, e);
+      }
+    }
+
+    if (toDelete.length > 0) {
+      setPaymentsLedger((prev) => prev.filter((p) => !toDelete.includes(p.id)));
+      addAuditLog(
+        'Transaction Ledger Pruned',
+        `Founder purged ${toDelete.length} duplicate or legacy transaction records from Firestore.`
+      );
+    }
+
+    return toDelete.length;
   };
 
   const getMessagesForBooking = (bookingId: string): ChatMessage[] => {
@@ -4033,6 +4119,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         submitAcceptanceFeePayment,
         confirmPaymentAndReleaseBooking,
         rejectPaymentAndFlagBooking,
+        purgeDuplicateTransactions,
         chatMessages,
         getMessagesForBooking,
         sendChatMessage,

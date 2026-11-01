@@ -490,9 +490,15 @@ export const MyBookingsView: React.FC = () => {
                     {isCancellable && (
                       <button
                         type="button"
-                        onClick={() => setBookingToCancelPrompt(booking)}
+                        onClick={() => {
+                          if (booking.status === 'Confirmed') {
+                            setCancellingBooking(booking);
+                          } else {
+                            setBookingToCancelPrompt(booking);
+                          }
+                        }}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-rose-400 hover:text-white border border-rose-800/80 hover:bg-rose-600 text-xs font-semibold rounded-xl transition-all shadow-xs cursor-pointer"
-                        title="Cancel this booking request"
+                        title={booking.status === 'Confirmed' ? 'Cancel confirmed booking (₹100 penalty required)' : 'Cancel this booking request'}
                       >
                         <AlertOctagon className="w-3.5 h-3.5" />
                         <span>Cancel Booking</span>
@@ -798,15 +804,15 @@ export const MyBookingsView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  const token = bookingToCancelPrompt.bookingToken;
-                  if (bookingToCancelPrompt.status === 'Confirmed') {
-                    cancelBookingByBookerWithCredit(bookingToCancelPrompt.id, 'Cancelled by Booker');
-                  } else {
-                    cancelBooking(bookingToCancelPrompt.id, 'Cancelled by Booker');
-                  }
+                  const b = bookingToCancelPrompt;
                   setBookingToCancelPrompt(null);
-                  setCancelToast(`Booking ${token} has been cancelled.`);
-                  setTimeout(() => setCancelToast(null), 3500);
+                  if (b.status === 'Confirmed') {
+                    setCancellingBooking(b);
+                  } else {
+                    cancelBooking(b.id, 'Cancelled by Booker');
+                    setCancelToast(`Booking ${b.bookingToken} has been cancelled.`);
+                    setTimeout(() => setCancelToast(null), 3500);
+                  }
                 }}
                 className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
               >

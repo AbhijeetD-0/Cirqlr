@@ -5,6 +5,8 @@
  * 2. Automated Image Validation (Aspect ratio, contrast/luminance variance, text density, selfie rejection)
  */
 
+import Tesseract from 'tesseract.js';
+
 export interface IdValidationResult {
   isValid: boolean;
   error?: string;
@@ -17,10 +19,11 @@ export interface ImageValidationResult {
   width?: number;
   height?: number;
   aspectRatio?: number;
+  extractedText?: string;
 }
 
 export const EXACT_IMAGE_ERROR =
-  'Verification Failed: Please upload a clear, valid photo of your original PAN Card, Voter ID, or Driving License.';
+  'Verification Failed: Document must be an official PAN, Voter ID, or Driving License/DigiLocker certificate and the name on the ID must match your Profile Legal Name.';
 
 /**
  * Validates document registration number against official Indian government regex formats:
@@ -94,8 +97,152 @@ export function validateIdNumber(docType: string, idNumber: string): IdValidatio
  * - Checks high-frequency edge & contrast density (IDs require printed text lines, emblems & micro-patterns)
  * - Detects centered selfie skin clusters
  */
-export async function validateIdDocumentImage(fileOrDataUrl: File | string): Promise<ImageValidationResult> {
-  return new Promise((resolve) => {
+/**
+ * Extracts and verifies text from ID document using OCR (Tesseract.js).
+ * Validates:
+ * 1. Official Government ID keywords based on docType:
+ *    - DL: DRIVING LICENCE, DRIVING LICENSE, UNION OF INDIA, DIGILOCKER, TRANSPORT, MOTOR VEHICLES, FORM SEVEN, LICENCE TO DRIVE
+ *    - PAN: INCOME TAX DEPARTMENT, PERMANENT ACCOUNT NUMBER, GOVT. OF INDIA, INCOMETAX, PAN
+ *    - Voter: ELECTION COMMISSION OF INDIA, ELECTORAL, EPIC, BHARAT NIRVACHAN, IDENTITY CARD
+ * 2. User's Full Legal Name match against recognized OCR text.
+ */
+async function verifyDocumentOcr(
+  imageSrc: string,
+  docType?: string,
+  userLegalName?: string
+): Promise<{ isValid: boolean; error?: string; extractedText?: string }> {
+  try {
+    // 12-second timeout guard to ensure smooth UI responsiveness
+    const ocrPromise = Tesseract.recognize(imageSrc, 'eng', {
+      logger: () => {},
+    });
+
+    const timeoutPromise = new Promise<{ data: { text: string } }>((_, reject) =>
+      setTimeout(() => reject(new Error('OCR Timeout')), 12000)
+    );
+
+    const result = await Promise.race([ocrPromise, timeoutPromise]);
+    const rawText = (result.data?.text || '').toUpperCase();
+
+    const normalizedDoc = (docType || '').toUpperCase();
+
+    // 1. Keyword check based on document type
+    const isDl = normalizedDoc.includes('DRIV') || normalizedDoc.includes('LICENSE') || normalizedDoc.includes('DL');
+    const isPan = normalizedDoc.includes('PAN');
+    const isVoter = normalizedDoc.includes('VOTER') || normalizedDoc.includes('EPIC');
+
+    let hasGovtKeywords = false;
+
+    if (isDl) {
+      const dlKeywords = [
+        'DRIVING LICENCE',
+        'DRIVING LICENSE',
+        'UNION OF INDIA',
+        'DIGILOCKER',
+        'TRANSPORT',
+        'MOTOR VEHICLE',
+        'MOTOR VEHICLES',
+        'FORM SEVEN',
+        'LICENCE TO DRIVE',
+        'AUTHORISATION TO DRIVE',
+        'VALID TILL',
+      ];
+      hasGovtKeywords = dlKeywords.some((kw) => rawText.includes(kw));
+    } else if (isPan) {
+      const panKeywords = [
+        'INCOME TAX',
+        'INCOMETAX',
+        'PERMANENT ACCOUNT NUMBER',
+        'GOVT. OF INDIA',
+        'GOVT OF INDIA',
+        'FATHER',
+        'SIGNATURE',
+      ];
+      hasGovtKeywords = panKeywords.some((kw) => rawText.includes(kw));
+    } else if (isVoter) {
+      const voterKeywords = [
+        'ELECTION COMMISSION',
+        'ELECTORAL',
+        'EPIC',
+        'BHARAT NIRVACHAN',
+        'IDENTITY CARD',
+        'ELECTOR',
+      ];
+      hasGovtKeywords = voterKeywords.some((kw) => rawText.includes(kw));
+    } else {
+      // General government keywords fallback
+      const generalKeywords = [
+        'GOVT',
+        'GOVERNMENT OF INDIA',
+        'BHARAT',
+        'INDIA',
+        'DIGILOCKER',
+        'INCOME TAX',
+        'DRIVING',
+        'ELECTION',
+        'EPIC',
+      ];
+      hasGovtKeywords = generalKeywords.some((kw) => rawText.includes(kw));
+    }
+
+    if (!hasGovtKeywords) {
+      return {
+        isValid: false,
+        error: EXACT_IMAGE_ERROR,
+        extractedText: rawText,
+      };
+    }
+
+    // 2. User's Full Legal Name match against recognized OCR text
+    if (userLegalName && userLegalName.trim()) {
+      const cleanName = userLegalName.trim().toUpperCase();
+      const rawTokens = cleanName
+        .split(/[\s,.-]+/)
+        .map((t) => t.trim())
+        .filter((t) => t.length > 2 && !['MR', 'MRS', 'MS', 'DR', 'SHRI', 'SMT'].includes(t));
+
+      if (rawTokens.length > 0) {
+        // Check if primary name tokens appear in rawText
+        const matchedTokens = rawTokens.filter((token) => rawText.includes(token));
+        // Require at least one significant non-trivial name token (e.g. first name or surname)
+        const isNameMatched = matchedTokens.length >= Math.min(1, rawTokens.length);
+
+        if (!isNameMatched) {
+          return {
+            isValid: false,
+            error: EXACT_IMAGE_ERROR,
+            extractedText: rawText,
+          };
+        }
+      }
+    }
+
+    return { isValid: true, extractedText: rawText };
+  } catch (err) {
+    console.warn('[verifyDocumentOcr] OCR notice:', err);
+    // If OCR engine encounters an unresolvable network timeout or worker error in offline sandbox,
+    // ensure clear error if text cannot be validated
+    return {
+      isValid: false,
+      error: EXACT_IMAGE_ERROR,
+    };
+  }
+}
+
+/**
+ * Client-side canvas image inspection & OCR verification:
+ * - Checks image dimensions and aspect ratio (standard ID card standard vs selfie/banner)
+ * - Checks luminance variance (rejects blank, solid, or washed-out images)
+ * - Checks high-frequency edge & contrast density (IDs require printed text lines, emblems & micro-patterns)
+ * - Detects centered selfie skin clusters
+ * - Executes strict OCR verification for government keywords and profile legal name
+ */
+export async function validateIdDocumentImage(
+  fileOrDataUrl: File | string,
+  userLegalName?: string,
+  docType?: string
+): Promise<ImageValidationResult> {
+  return new Promise(async (resolve) => {
     let objectUrlToRevoke: string | null = null;
     let imageSrc = '';
 
@@ -112,16 +259,13 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
     const img = new Image();
     img.crossOrigin = 'anonymous';
 
-    img.onload = () => {
-      if (objectUrlToRevoke) {
-        URL.revokeObjectURL(objectUrlToRevoke);
-      }
-
+    img.onload = async () => {
       const width = img.naturalWidth || img.width;
       const height = img.naturalHeight || img.height;
 
       // 1. Minimum readable dimensions check
       if (width < 240 || height < 160) {
+        if (objectUrlToRevoke) URL.revokeObjectURL(objectUrlToRevoke);
         resolve({
           isValid: false,
           error: EXACT_IMAGE_ERROR,
@@ -132,12 +276,11 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
       }
 
       // 2. Aspect ratio check
-      // Support standard landscape ID cards (1.15 to 2.20), portrait documents/A4 DigiLocker PDFs (0.35 to 0.90),
-      // and phone camera captures (0.35 to 3.20)
       const aspectRatio = width / height;
       const isAllowedAspectRatio = aspectRatio >= 0.35 && aspectRatio <= 3.20;
 
       if (!isAllowedAspectRatio) {
+        if (objectUrlToRevoke) URL.revokeObjectURL(objectUrlToRevoke);
         resolve({
           isValid: false,
           error: EXACT_IMAGE_ERROR,
@@ -158,7 +301,7 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
         if (!ctx) {
-          // If 2D context fails, fallback gracefully to dimensions pass
+          if (objectUrlToRevoke) URL.revokeObjectURL(objectUrlToRevoke);
           resolve({ isValid: true, width, height, aspectRatio });
           return;
         }
@@ -181,7 +324,6 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
         const centerTop = Math.floor(sampleHeight * 0.2);
         const centerBottom = Math.floor(sampleHeight * 0.8);
 
-        // Pre-allocate luminance buffer for horizontal edge gradient check
         const lumBuffer = new Float32Array(totalPixels);
 
         for (let i = 0; i < totalPixels; i++) {
@@ -190,7 +332,6 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
           const g = data[idx + 1];
           const b = data[idx + 2];
 
-          // Perceived luminance (ITU-R BT.601)
           const lum = 0.299 * r + 0.587 * g + 0.114 * b;
           lumBuffer[i] = lum;
 
@@ -199,12 +340,10 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
           if (lum < minLum) minLum = lum;
           if (lum > maxLum) maxLum = lum;
 
-          // Check if pixel is within center 50%
           const x = i % sampleWidth;
           const y = Math.floor(i / sampleWidth);
           if (x >= centerLeft && x <= centerRight && y >= centerTop && y <= centerBottom) {
             centerPixelsCount++;
-            // Skin tone detection in RGB
             const isSkin =
               r > 95 &&
               g > 40 &&
@@ -217,13 +356,12 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
           }
         }
 
-        // Test A: Standard deviation of luminance (rejects solid blank images)
         const meanLum = luminanceSum / totalPixels;
         const variance = Math.max(0, luminanceSqSum / totalPixels - meanLum * meanLum);
         const stdDev = Math.sqrt(variance);
 
-        if (stdDev < 6) {
-          // Pure solid single-color image
+        if (stdDev < 6 || maxLum - minLum < 20) {
+          if (objectUrlToRevoke) URL.revokeObjectURL(objectUrlToRevoke);
           resolve({
             isValid: false,
             error: EXACT_IMAGE_ERROR,
@@ -234,20 +372,6 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
           return;
         }
 
-        // Test B: Dynamic range (relaxed to accept white-background DigiLocker certificates)
-        if (maxLum - minLum < 20) {
-          // Zero contrast, flat image
-          resolve({
-            isValid: false,
-            error: EXACT_IMAGE_ERROR,
-            width,
-            height,
-            aspectRatio,
-          });
-          return;
-        }
-
-        // Test C: High-frequency edge transitions (printed text lines on cards or certificates)
         for (let y = 0; y < sampleHeight; y++) {
           for (let x = 0; x < sampleWidth - 1; x++) {
             const idx = y * sampleWidth + x;
@@ -260,7 +384,7 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
 
         const edgeDensityPercent = (highContrastEdges / totalPixels) * 100;
         if (edgeDensityPercent < 0.6) {
-          // Lacks printed text density and document structure
+          if (objectUrlToRevoke) URL.revokeObjectURL(objectUrlToRevoke);
           resolve({
             isValid: false,
             error: EXACT_IMAGE_ERROR,
@@ -271,11 +395,10 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
           return;
         }
 
-        // Test D: Reject prominent centered facial selfies (predominantly face/skin with low document edge density)
         if (centerPixelsCount > 0) {
           const skinPercent = (skinTonePixelsInCenter / centerPixelsCount) * 100;
           if (skinPercent > 65 && edgeDensityPercent < 2.0) {
-            // Predominant facial selfie
+            if (objectUrlToRevoke) URL.revokeObjectURL(objectUrlToRevoke);
             resolve({
               isValid: false,
               error: EXACT_IMAGE_ERROR,
@@ -286,13 +409,33 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
             return;
           }
         }
-
-        resolve({ isValid: true, width, height, aspectRatio });
       } catch (err) {
-        console.warn('[validateIdDocumentImage] Pixel inspection warning:', err);
-        // If canvas extraction is restricted (e.g. cross-origin), allow pass if dimensions match standard ratio
-        resolve({ isValid: true, width, height, aspectRatio });
+        console.warn('[validateIdDocumentImage] Pixel inspection note:', err);
       }
+
+      // 4. Strict OCR Text & Name Matching Inspection
+      const ocrResult = await verifyDocumentOcr(imageSrc, docType, userLegalName);
+      if (objectUrlToRevoke) URL.revokeObjectURL(objectUrlToRevoke);
+
+      if (!ocrResult.isValid) {
+        resolve({
+          isValid: false,
+          error: ocrResult.error || EXACT_IMAGE_ERROR,
+          width,
+          height,
+          aspectRatio,
+          extractedText: ocrResult.extractedText,
+        });
+        return;
+      }
+
+      resolve({
+        isValid: true,
+        width,
+        height,
+        aspectRatio,
+        extractedText: ocrResult.extractedText,
+      });
     };
 
     img.onerror = () => {
