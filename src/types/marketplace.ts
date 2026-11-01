@@ -95,6 +95,11 @@ export interface UserProfile {
   suspendedAt?: string; // Timestamp when suspension was triggered
   prohibitedVenueAttempt?: string; // Exact venue text attempted by violator
   cancellationCreditBalance?: number; // In ₹ Rupees, auto-applied to next booking acceptance fee
+  walletBalance?: number; // In ₹ Rupees, alias for cancellationCreditBalance
+  creditBalance?: number; // In ₹ Rupees, alias for cancellationCreditBalance
+  availableCredit?: number; // In ₹ Rupees, alias for cancellationCreditBalance
+  name?: string; // Legal full name alias
+  profileImage?: string; // Profile image alias
   monthlyLifelineUsed?: number; // Number of emergency cancellations used in current calendar month (0 or 1)
   monthlyLifelineMonth?: string; // Calendar month of last emergency lifeline usage (e.g. '2026-10')
   walletHistory?: WalletTransactionEntry[]; // Audit trail of wallet credits, debits, dispute refunds, and admin notes
@@ -199,6 +204,8 @@ export interface BookingRecord {
   rescheduledAt?: string;
   rescheduledByToken?: string;
   rescheduleHistory?: RescheduleHistoryEntry[];
+  penaltyPaid?: number;
+  penaltyRazorpayRefId?: string;
 }
 
 export type PaymentLedgerStatus = 
@@ -213,7 +220,7 @@ export interface PaymentLedgerEntry {
   paymentReferenceId?: string; // Unified canonical payment/txn ID
   bookingId?: string;
   bookingToken?: string;
-  type: 'Booking Acceptance Fee' | '1-Month Pro Subscription' | 'Cancellation Penalty';
+  type: 'Booking Acceptance Fee' | '1-Month Pro Subscription' | 'Cancellation Penalty' | 'Admin Wallet Adjustment';
   companionToken: string;
   companionName: string;
   bookerToken?: string;

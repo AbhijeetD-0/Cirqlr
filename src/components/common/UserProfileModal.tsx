@@ -197,8 +197,7 @@ export const UserProfileModal: React.FC = () => {
   const isPro = Boolean(currentUser.isProCompanion || currentUser.isPremiumCompanion);
   const effectiveDocImg = (documentImageUrl || currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim();
   const effectiveDocId = (documentIdNumber || currentUser.idDocumentNumber || currentUser.documentIdNumber || '').trim();
-  const hasIdDoc = Boolean(effectiveDocImg && effectiveDocId);
-  const isVerified = Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected' && hasIdDoc);
+  const isVerified = Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected');
 
   const basePrice = platformSettings.proSubscriptionMonthlyPrice;
   const discountPercent = platformSettings.proOccasionDiscountPercent;
@@ -333,36 +332,45 @@ export const UserProfileModal: React.FC = () => {
       .filter(Boolean);
 
     const effectiveDocImage = (documentImageUrl || currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim();
-    const cleanIdNum = documentIdNumber.trim().toUpperCase();
+    const cleanIdNum = documentIdNumber.trim().toUpperCase() || (currentUser.idDocumentNumber || currentUser.documentIdNumber || '').trim().toUpperCase();
 
-    // If ID image is provided, enforce strict ID number format & image validation
+    // If a new ID image was uploaded or new ID number was entered, enforce strict validation
     let isNowAutoVerified = false;
-    if (effectiveDocImage) {
-      if (!cleanIdNum) {
+    if (documentImageUrl.trim() || (cleanIdNum && cleanIdNum !== (currentUser.idDocumentNumber || currentUser.documentIdNumber || '').toUpperCase())) {
+      if (documentImageUrl.trim() && !cleanIdNum) {
         setDocValidationError('Government ID Number is required when uploading document proof.');
         return;
       }
-      const numVal = validateIdNumber(documentType, cleanIdNum);
-      if (!numVal.isValid) {
-        setDocValidationError(numVal.error || 'Invalid ID number format.');
-        return;
+      if (cleanIdNum) {
+        const numVal = validateIdNumber(documentType, cleanIdNum);
+        if (!numVal.isValid) {
+          setDocValidationError(numVal.error || 'Invalid ID number format.');
+          return;
+        }
       }
-      const imgVal = await validateIdDocumentImage(effectiveDocImage);
-      if (!imgVal.isValid) {
-        setDocValidationError(imgVal.error || EXACT_IMAGE_ERROR);
-        return;
+      if (documentImageUrl.trim()) {
+        const imgVal = await validateIdDocumentImage(documentImageUrl);
+        if (!imgVal.isValid) {
+          setDocValidationError(imgVal.error || EXACT_IMAGE_ERROR);
+          return;
+        }
+        isNowAutoVerified = true;
       }
-      isNowAutoVerified = true;
     }
 
+    const trimmedName = fullName.trim();
+    const trimmedAvatar = avatarUrl.trim() || currentUser.avatarUrl;
+
     updateCurrentUserProfile({
-      fullName: fullName.trim(),
+      fullName: trimmedName,
+      name: trimmedName,
       email: email.trim().toLowerCase(),
       age: Math.max(21, Number(age)),
       gender,
       city,
       residentialAddress: residentialAddress.trim(),
-      avatarUrl: avatarUrl.trim() || currentUser.avatarUrl,
+      avatarUrl: trimmedAvatar,
+      profileImage: trimmedAvatar,
       serviceAreas: parsedAreas.length > 0 ? parsedAreas : currentUser.serviceAreas,
       bio: bio.trim(),
       languages: parsedLanguages.length > 0 ? parsedLanguages : currentUser.languages,
@@ -375,7 +383,7 @@ export const UserProfileModal: React.FC = () => {
       idDocumentImage: effectiveDocImage || undefined,
       idProofUrl: effectiveDocImage || undefined,
       isVerified: isNowAutoVerified || Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected'),
-      verificationStatus: isNowAutoVerified || (currentUser.isVerified && currentUser.verificationStatus !== 'Rejected') ? 'Verified' : 'Unverified',
+      verificationStatus: isNowAutoVerified || (currentUser.isVerified && currentUser.verificationStatus !== 'Rejected') ? 'Verified' : (currentUser.verificationStatus || 'Unverified'),
     });
 
     if (effectiveDocImage && cleanIdNum) {
@@ -1077,10 +1085,15 @@ export const UserProfileModal: React.FC = () => {
                     }
 
                     const combinedTransactions: CombinedFinancialTxn[] = [];
+                    const seenKeys = new Set<string>();
 
                     // 1. Wallet credits and debits from user.walletHistory
                     (currentUser.walletHistory || []).forEach((w) => {
                       const isCredit = w.type === 'credit';
+                      const key = (w.paymentReferenceId || w.id || '').trim();
+                      if (key) seenKeys.add(key);
+                      if (w.id) seenKeys.add(w.id);
+
                       combinedTransactions.push({
                         id: w.id,
                         refId: w.paymentReferenceId || w.id,
@@ -1095,26 +1108,57 @@ export const UserProfileModal: React.FC = () => {
                       });
                     });
 
-                    // 2. Gateway payments from paymentsLedger (unified canonical paymentReferenceId)
+                    // 2. Gateway payments from paymentsLedger
                     (paymentsLedger || [])
-                      .filter((p) => p.companionToken === currentUser.userToken || p.bookerToken === currentUser.userToken)
+                      .filter((p) => {
+                        // Exclude dummy transactions
+                        if (['TXN-WB-101', 'TXN-WB-301'].includes(p.id)) return false;
+                        if (p.type === 'Admin Wallet Adjustment') return false; // Already represented in walletHistory
+                        return p.companionToken === currentUser.userToken || p.bookerToken === currentUser.userToken;
+                      })
                       .forEach((p) => {
+                        const refKey = (p.paymentReferenceId || p.razorpayRefId || p.id || '').trim();
+                        if (refKey && seenKeys.has(refKey)) return;
+                        if (p.id && seenKeys.has(p.id)) return;
+                        if (refKey) seenKeys.add(refKey);
+                        if (p.id) seenKeys.add(p.id);
+
                         const isPro = p.type === '1-Month Pro Subscription';
-                        const isBookerUser = p.bookerToken === currentUser.userToken && p.companionToken !== currentUser.userToken;
+                        const isPenalty = p.type === 'Cancellation Penalty';
+                        const isAcceptanceFee = p.type === 'Booking Acceptance Fee';
+                        const isCompanion = p.companionToken === currentUser.userToken;
+                        const isBooker = p.bookerToken === currentUser.userToken;
+
+                        // Only show Acceptance Fee to Companion
+                        if (isAcceptanceFee && !isCompanion) return;
+                        // Only show Cancellation Penalty to Booker
+                        if (isPenalty && !isBooker) return;
+
+                        let typeDisplay = 'Outing Fee Recorded';
+                        let badgeStyle = 'bg-cyan-950 text-cyan-300 border-cyan-600/70';
+                        let details = `${p.outingTitle || 'Outing Acceptance'} (${p.status})`;
+
+                        if (isPro) {
+                          typeDisplay = 'Cirqlr Pro Paid';
+                          badgeStyle = 'bg-purple-950 text-purple-300 border-purple-600/70';
+                          details = 'Companion Pro 1-Month Unlimited Pass';
+                        } else if (isPenalty) {
+                          typeDisplay = 'Cancellation Penalty Paid';
+                          badgeStyle = 'bg-rose-950 text-rose-300 border-rose-600/70';
+                          details = `Cancellation Penalty Fee (₹${p.feeAmount})`;
+                        } else if (isAcceptanceFee) {
+                          typeDisplay = 'Acceptance Fee Paid';
+                          badgeStyle = 'bg-cyan-950 text-cyan-300 border-cyan-600/70';
+                        }
+
                         combinedTransactions.push({
                           id: p.id,
-                          refId: p.paymentReferenceId || p.razorpayRefId || p.id,
-                          type: isPro ? 'Cirqlr Pro Paid' : (isBookerUser ? 'Outing Fee Recorded' : 'Acceptance Fee Paid'),
-                          badgeStyle: isPro
-                            ? 'bg-purple-950 text-purple-300 border-purple-600/70'
-                            : isBookerUser
-                            ? 'bg-emerald-950 text-emerald-300 border-emerald-600/70'
-                            : 'bg-cyan-950 text-cyan-300 border-cyan-600/70',
+                          refId: refKey,
+                          type: typeDisplay,
+                          badgeStyle,
                           amount: p.feeAmount,
                           isCredit: false,
-                          details: isPro
-                            ? 'Companion Pro 1-Month Unlimited Pass'
-                            : `${p.outingTitle || 'Outing Acceptance'} (${p.status})`,
+                          details,
                           timestamp: p.timestamp,
                         });
                       });

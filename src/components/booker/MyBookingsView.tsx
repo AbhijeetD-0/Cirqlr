@@ -99,6 +99,29 @@ export const MyBookingsView: React.FC = () => {
     );
   }
 
+  const getOutingRemainingHours = (dateStr?: string, timeStr?: string): number => {
+    if (!dateStr) return 999;
+    try {
+      const rawTime = (timeStr || '12:00').trim().toUpperCase();
+      let hours = 12;
+      let minutes = 0;
+      const isPM = rawTime.includes('PM');
+      const isAM = rawTime.includes('AM');
+      const timeMatch = rawTime.match(/(\d{1,2}):(\d{2})/);
+      if (timeMatch) {
+        hours = parseInt(timeMatch[1], 10);
+        minutes = parseInt(timeMatch[2], 10);
+        if (isPM && hours < 12) hours += 12;
+        if (isAM && hours === 12) hours = 0;
+      }
+      const outingDate = new Date(`${dateStr}T00:00:00`);
+      outingDate.setHours(hours, minutes, 0, 0);
+      return (outingDate.getTime() - Date.now()) / (1000 * 60 * 60);
+    } catch {
+      return 999;
+    }
+  };
+
   // STRICT MULTI-USER ISOLATION:
   // Bookings requested by current user as Booker (Sorted Newest First)
   const myBookings = bookings
@@ -230,6 +253,10 @@ export const MyBookingsView: React.FC = () => {
                   : isRejectedByCompanion
                   ? 'Rejected by Companion'
                   : booking.status;
+
+                const rescheduledCount = booking.rescheduledCount || 0;
+                const hoursUntilOuting = getOutingRemainingHours(booking.outingDate, booking.outingTime);
+                const canReschedule = rescheduledCount < 1 && hoursUntilOuting >= 3;
 
             return (
               <motion.div
@@ -437,15 +464,27 @@ export const MyBookingsView: React.FC = () => {
                   {/* Right Actions: Reschedule, Cancel Booking & Report Companion */}
                   <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
                     {(booking.status === 'Confirmed' || booking.status === 'Accepted' || String(booking.status || '').toLowerCase().includes('pending')) && (
-                      <button
-                        type="button"
-                        onClick={() => setBookingToReschedule(booking)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-cyan-300 hover:text-white border border-cyan-700/80 hover:bg-cyan-700 text-xs font-semibold rounded-xl transition-all shadow-xs cursor-pointer"
-                        title="Free Date & Time Reschedule"
-                      >
-                        <Calendar className="w-3.5 h-3.5" />
-                        <span>🗓️ Reschedule Date/Time</span>
-                      </button>
+                      canReschedule ? (
+                        <button
+                          type="button"
+                          onClick={() => setBookingToReschedule(booking)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-cyan-300 hover:text-white border border-cyan-700/80 hover:bg-cyan-700 text-xs font-semibold rounded-xl transition-all shadow-xs cursor-pointer"
+                          title="Free Date & Time Reschedule (Allowed 1 time, at least 3 hours prior)"
+                        >
+                          <Calendar className="w-3.5 h-3.5" />
+                          <span>🗓️ Reschedule Date/Time</span>
+                        </button>
+                      ) : (
+                        <span
+                          className="flex items-center gap-1.5 px-2.5 py-1 text-slate-400 border border-slate-800 bg-slate-950/60 text-[11px] font-medium rounded-xl select-none"
+                          title={rescheduledCount >= 1 ? 'Limit reached: Maximum 1 reschedule allowed per booking' : 'Reschedule closed: Less than 3 hours remain before scheduled outing'}
+                        >
+                          <Calendar className="w-3 h-3 text-slate-500" />
+                          <span>
+                            {rescheduledCount >= 1 ? 'Reschedule Used (1/1)' : 'Reschedule Closed (<3h)'}
+                          </span>
+                        </span>
+                      )
                     )}
 
                     {isCancellable && (

@@ -49,6 +49,34 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
 
   const { openCheckout, isLoading: isRazorpayLoading } = useRazorpayPayment();
 
+  // Helper to compute hours until outing
+  const getOutingRemainingHours = (dateStr?: string, timeStr?: string): number => {
+    if (!dateStr) return 999;
+    try {
+      const rawTime = (timeStr || '12:00').trim().toUpperCase();
+      let hours = 12;
+      let minutes = 0;
+      const isPM = rawTime.includes('PM');
+      const isAM = rawTime.includes('AM');
+      const timeMatch = rawTime.match(/(\d{1,2}):(\d{2})/);
+      if (timeMatch) {
+        hours = parseInt(timeMatch[1], 10);
+        minutes = parseInt(timeMatch[2], 10);
+        if (isPM && hours < 12) hours += 12;
+        if (isAM && hours === 12) hours = 0;
+      }
+      const outingDate = new Date(`${dateStr}T00:00:00`);
+      outingDate.setHours(hours, minutes, 0, 0);
+      return (outingDate.getTime() - Date.now()) / (1000 * 60 * 60);
+    } catch {
+      return 999;
+    }
+  };
+
+  const rescheduledCount = booking.rescheduledCount || 0;
+  const hoursUntilOuting = getOutingRemainingHours(booking.outingDate, booking.outingTime);
+  const canReschedule = rescheduledCount < 1 && hoursUntilOuting >= 3;
+
   const handlePayPenaltyAndCancel = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedReason) return;
@@ -59,10 +87,10 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
       : selectedReason;
 
     openCheckout({
-      amount: 20,
+      amount: 100,
       currency: 'INR',
       name: 'Cirqlr by SUDARSAN HUB',
-      description: `Cancellation Penalty Fee - Booking ${booking.bookingToken}`,
+      description: `Mandatory ₹100 Cancellation Penalty Fee - Booking ${booking.bookingToken}`,
       prefill: {
         name: currentUser?.fullName || '',
         email: currentUser?.email || '',
@@ -78,7 +106,7 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
         setIsSuccess(true);
         setTimeout(() => {
           onCancelledSuccess();
-        }, 1200);
+        }, 1500);
       },
       onError: (err) => {
         setErrorMessage(
@@ -101,7 +129,7 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
             </div>
             <div>
               <h3 className="font-bold text-sm text-white">
-                Booker Cancellation &amp; Penalty
+                Booker Cancellation &amp; Mandatory ₹100 Penalty
               </h3>
               <span className="text-[10px] text-slate-400 font-mono">
                 Booking Ref: {booking.bookingToken} • {booking.companionName}
@@ -127,9 +155,9 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
               <h4 className="text-base font-bold text-white">
                 Booking Cancelled Successfully
               </h4>
-              <p className="text-xs text-slate-300 mt-1 max-w-xs mx-auto leading-relaxed">
-                ₹20 Platform Cancellation Fee recorded (<span className="font-mono text-cyan-400 font-semibold">{razorpayRefId}</span>). 
-                The E2E chat has been terminated and the Companion's acceptance fee refund has been queued.
+              <p className="text-xs text-slate-300 mt-1 max-w-sm mx-auto leading-relaxed">
+                ₹100 Platform Cancellation Penalty recorded (<span className="font-mono text-cyan-400 font-semibold">{razorpayRefId}</span>). 
+                The companion's Platform Acceptance Fee has been refunded 100% back to their Fee Wallet in real-time, and encrypted chat has permanently closed.
               </p>
             </div>
           </div>
@@ -140,11 +168,11 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
               <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
               <div className="text-xs text-rose-200 leading-relaxed">
                 <span className="font-bold block text-white">
-                  Strict Cancellation Policy
+                  Mandatory Booker Cancellation Policy
                 </span>
                 Cancelling a confirmed booking requires payment of a strict 
-                <span className="font-extrabold text-rose-300"> ₹20 Platform Penalty Fee</span>. 
-                Once cancelled, the E2E encrypted chat channel will be immediately closed and locked.
+                <span className="font-extrabold text-rose-300"> ₹100 Platform Penalty Fee</span> via live Razorpay. 
+                Zero lifelines or wallet balance can be used. Upon payment, 100% of the companion's paid acceptance fee is instantly refunded to their wallet.
               </div>
             </div>
 
@@ -199,38 +227,47 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
 
             {/* Free Reschedule Alternative Option */}
             {onOpenReschedule && (
-              <div className="p-3.5 bg-cyan-950/70 border border-cyan-700/80 rounded-xl space-y-2">
-                <div className="flex items-start gap-2.5">
-                  <Calendar className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold text-cyan-300 text-xs block">
-                      Need to Change Date or Time? Rescheduling is 100% Free!
-                    </span>
-                    <p className="text-[11px] text-cyan-100/90 mt-0.5 leading-relaxed">
-                      You can move this outing to a new date or time with zero cancellation penalties and keep your confirmed companion.
-                    </p>
+              canReschedule ? (
+                <div className="p-3.5 bg-cyan-950/70 border border-cyan-700/80 rounded-xl space-y-2">
+                  <div className="flex items-start gap-2.5">
+                    <Calendar className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-cyan-300 text-xs block">
+                        Need to Change Date or Time? Rescheduling is 100% Free!
+                      </span>
+                      <p className="text-[11px] text-cyan-100/90 mt-0.5 leading-relaxed">
+                        Avoid the ₹100 cancellation fee by rescheduling your outing. (Limit: 1 free reschedule per booking, allowed at least 3 hours prior).
+                      </p>
+                    </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={onOpenReschedule}
+                    className="w-full py-2 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Calendar className="w-3.5 h-3.5" />
+                    <span>🗓️ Reschedule Outing Instead (100% Free)</span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={onOpenReschedule}
-                  className="w-full py-2 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <Calendar className="w-3.5 h-3.5" />
-                  <span>🗓️ Reschedule Outing Instead (100% Free)</span>
-                </button>
-              </div>
+              ) : (
+                <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl text-slate-400 text-xs flex items-center gap-2">
+                  <Info className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span>
+                    Rescheduling is no longer available ({rescheduledCount >= 1 ? '1 free reschedule already utilized' : 'less than 3 hours before scheduled outing'}).
+                  </span>
+                </div>
+              )
             )}
 
-            {/* Razorpay Simulation Box */}
+            {/* Razorpay Gateway Box */}
             <div className="bg-slate-950/90 rounded-xl p-4 text-white space-y-3 border border-slate-800">
               <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
                 <div className="flex items-center gap-2">
                   <CreditCard className="w-4 h-4 text-indigo-400" />
-                  <span className="text-xs font-semibold">Razorpay Simulated Gateway</span>
+                  <span className="text-xs font-semibold">Razorpay Live Gateway</span>
                 </div>
                 <span className="text-[10px] bg-indigo-500/20 text-indigo-300 font-mono px-2 py-0.5 rounded border border-indigo-400/30">
-                  Live Test Mode
+                  Instant Verification
                 </span>
               </div>
 
@@ -239,8 +276,8 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
                   <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-semibold">
                     Cancellation Penalty Due
                   </span>
-                  <span className="text-2xl font-extrabold font-mono text-emerald-400">
-                    ₹20.00
+                  <span className="text-2xl font-extrabold font-mono text-rose-400">
+                    ₹100.00
                   </span>
                 </div>
                 <div className="text-right">
@@ -254,7 +291,7 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
               <div className="flex items-center gap-1.5 text-[10px] text-slate-400 pt-1 border-t border-slate-800/80">
                 <Info className="w-3 h-3 text-slate-400 shrink-0" />
                 <span>
-                  Booking CANNOT be cancelled without paying this mandatory ₹20 fee.
+                  Booking CANNOT be cancelled without paying this mandatory ₹100 fee.
                 </span>
               </div>
             </div>
@@ -287,7 +324,7 @@ export const CancellationPenaltyModal: React.FC<CancellationPenaltyModalProps> =
                   </>
                 ) : (
                   <>
-                    <span>Pay ₹20 via Razorpay &amp; Cancel</span>
+                    <span>Pay ₹100 via Razorpay &amp; Cancel</span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </>
                 )}

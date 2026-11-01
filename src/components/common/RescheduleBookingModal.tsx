@@ -8,7 +8,8 @@ import {
   Sparkles, 
   CheckCircle2, 
   Building2,
-  CalendarCheck
+  CalendarCheck,
+  AlertTriangle
 } from 'lucide-react';
 
 interface RescheduleBookingModalProps {
@@ -34,8 +35,43 @@ export const RescheduleBookingModal: React.FC<RescheduleBookingModalProps> = ({
 
   const todayStr = new Date().toISOString().split('T')[0];
 
+  const getOutingRemainingHours = (dateStr?: string, timeStr?: string): number => {
+    if (!dateStr) return 999;
+    try {
+      const rawTime = (timeStr || '12:00').trim().toUpperCase();
+      let hours = 12;
+      let minutes = 0;
+      const isPM = rawTime.includes('PM');
+      const isAM = rawTime.includes('AM');
+      const timeMatch = rawTime.match(/(\d{1,2}):(\d{2})/);
+      if (timeMatch) {
+        hours = parseInt(timeMatch[1], 10);
+        minutes = parseInt(timeMatch[2], 10);
+        if (isPM && hours < 12) hours += 12;
+        if (isAM && hours === 12) hours = 0;
+      }
+      const outingDate = new Date(`${dateStr}T00:00:00`);
+      outingDate.setHours(hours, minutes, 0, 0);
+      return (outingDate.getTime() - Date.now()) / (1000 * 60 * 60);
+    } catch {
+      return 999;
+    }
+  };
+
+  const rescheduledCount = booking.rescheduledCount || 0;
+  const hoursUntilOuting = getOutingRemainingHours(booking.outingDate, booking.outingTime);
+  const isRescheduleLocked = rescheduledCount >= 1 || hoursUntilOuting < 3;
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (rescheduledCount >= 1) {
+      setError('Policy Limit Reached: Rescheduling is strictly limited to a maximum of 1 reschedule per booking.');
+      return;
+    }
+    if (hoursUntilOuting < 3) {
+      setError('Reschedule Closed: Rescheduling must be requested at least 3 hours prior to scheduled outing time.');
+      return;
+    }
     if (!newDate.trim()) {
       setError('Please select a valid new date for the outing.');
       return;
@@ -109,16 +145,30 @@ export const RescheduleBookingModal: React.FC<RescheduleBookingModalProps> = ({
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4 overflow-y-auto max-h-[80vh] text-xs">
-            {/* 100% Free Guarantee Banner */}
-            <div className="bg-gradient-to-r from-cyan-950/60 via-indigo-950/60 to-emerald-950/60 border border-cyan-700/50 rounded-2xl p-3.5 space-y-1 shadow-sm">
-              <div className="flex items-center gap-1.5 font-bold text-cyan-300">
-                <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
-                <span>100% Free Rescheduling (Zero Extra Platform Fee)</span>
+            {/* Guarantee / Policy Lock Banner */}
+            {isRescheduleLocked ? (
+              <div className="bg-rose-950/70 border border-rose-800/80 rounded-2xl p-3.5 space-y-1 shadow-sm text-rose-200">
+                <div className="flex items-center gap-1.5 font-bold text-rose-300">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Reschedule Policy Limit Reached</span>
+                </div>
+                <p className="text-[11px] text-rose-200 leading-relaxed">
+                  {rescheduledCount >= 1
+                    ? 'This booking has already been rescheduled once. Further reschedules are not allowed to protect companion time commitments.'
+                    : 'Rescheduling is closed because less than 3 hours remain until the scheduled outing time.'}
+                </p>
               </div>
-              <p className="text-[11px] text-slate-300 leading-relaxed">
-                Genuine schedule conflicts shouldn't force cancellations. You can freely update your meetup date and time without forfeiting fees or deducting emergency lifelines.
-              </p>
-            </div>
+            ) : (
+              <div className="bg-gradient-to-r from-cyan-950/60 via-indigo-950/60 to-emerald-950/60 border border-cyan-700/50 rounded-2xl p-3.5 space-y-1 shadow-sm">
+                <div className="flex items-center gap-1.5 font-bold text-cyan-300">
+                  <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span>100% Free Rescheduling (Zero Extra Platform Fee)</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Genuine schedule conflicts shouldn't force cancellations. You can freely update your meetup date and time without forfeiting fees or deducting emergency lifelines (Limit: 1 free reschedule, minimum 3 hours notice).
+                </p>
+              </div>
+            )}
 
             {/* Current Schedule Summary */}
             <div className="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800 space-y-2">
@@ -206,7 +256,8 @@ export const RescheduleBookingModal: React.FC<RescheduleBookingModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="flex-1 py-2.5 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-cyan-900/30 flex items-center justify-center gap-1.5 cursor-pointer"
+                disabled={isRescheduleLocked}
+                className="flex-1 py-2.5 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-cyan-900/30 flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Confirm Free Reschedule</span>

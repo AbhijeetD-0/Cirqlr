@@ -31,7 +31,7 @@ export const AcceptanceFeePaymentModal: React.FC<AcceptanceFeePaymentModalProps>
   // Compute strictly live on render using the pure helper function
   const liveFee = computeLiveBookingFee(booking, bookings, currentUser, platformSettings);
   const finalPlatformFee = liveFee.finalPlatformFee;
-  const cancellationCreditBalance = currentUser?.cancellationCreditBalance || 0;
+  const cancellationCreditBalance = currentUser?.cancellationCreditBalance ?? currentUser?.walletBalance ?? currentUser?.creditBalance ?? 0;
 
   // Wallet deduction calculations when 'use_credit' is chosen
   const walletDeduction = Math.min(cancellationCreditBalance, finalPlatformFee);

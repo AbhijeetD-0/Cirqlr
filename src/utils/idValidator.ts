@@ -132,15 +132,12 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
       }
 
       // 2. Aspect ratio check
-      // ISO/IEC 7810 ID-1 cards have an aspect ratio of ~1.586 landscape or ~0.63 portrait.
-      // Allowing generous cropping margins:
-      // Landscape: 1.15 to 2.10
-      // Portrait: 0.48 to 0.88
+      // Support standard landscape ID cards (1.15 to 2.20), portrait documents/A4 DigiLocker PDFs (0.35 to 0.90),
+      // and phone camera captures (0.35 to 3.20)
       const aspectRatio = width / height;
-      const isLandscapeCard = aspectRatio >= 1.15 && aspectRatio <= 2.15;
-      const isPortraitCard = aspectRatio >= 0.48 && aspectRatio <= 0.88;
+      const isAllowedAspectRatio = aspectRatio >= 0.35 && aspectRatio <= 3.20;
 
-      if (!isLandscapeCard && !isPortraitCard) {
+      if (!isAllowedAspectRatio) {
         resolve({
           isValid: false,
           error: EXACT_IMAGE_ERROR,
@@ -154,7 +151,7 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
       // 3. Offscreen Canvas Pixel Analysis for document structure
       try {
         const sampleWidth = 160;
-        const sampleHeight = Math.round(160 / aspectRatio);
+        const sampleHeight = Math.max(50, Math.round(160 / Math.max(0.2, aspectRatio)));
         const canvas = document.createElement('canvas');
         canvas.width = sampleWidth;
         canvas.height = sampleHeight;
@@ -220,13 +217,13 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
           }
         }
 
-        // Test A: Standard deviation of luminance (detects blank, solid, or flat images)
+        // Test A: Standard deviation of luminance (rejects solid blank images)
         const meanLum = luminanceSum / totalPixels;
         const variance = Math.max(0, luminanceSqSum / totalPixels - meanLum * meanLum);
         const stdDev = Math.sqrt(variance);
 
-        if (stdDev < 15) {
-          // Nearly solid or blank image
+        if (stdDev < 6) {
+          // Pure solid single-color image
           resolve({
             isValid: false,
             error: EXACT_IMAGE_ERROR,
@@ -237,9 +234,9 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
           return;
         }
 
-        // Test B: Dynamic range
-        if (maxLum - minLum < 60) {
-          // Low contrast, washed-out image
+        // Test B: Dynamic range (relaxed to accept white-background DigiLocker certificates)
+        if (maxLum - minLum < 20) {
+          // Zero contrast, flat image
           resolve({
             isValid: false,
             error: EXACT_IMAGE_ERROR,
@@ -250,20 +247,20 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
           return;
         }
 
-        // Test C: High-frequency edge transitions (printed text lines on cards)
+        // Test C: High-frequency edge transitions (printed text lines on cards or certificates)
         for (let y = 0; y < sampleHeight; y++) {
           for (let x = 0; x < sampleWidth - 1; x++) {
             const idx = y * sampleWidth + x;
             const diff = Math.abs(lumBuffer[idx + 1] - lumBuffer[idx]);
-            if (diff > 28) {
+            if (diff > 25) {
               highContrastEdges++;
             }
           }
         }
 
         const edgeDensityPercent = (highContrastEdges / totalPixels) * 100;
-        if (edgeDensityPercent < 2.0) {
-          // Lacks printed text density and card structure
+        if (edgeDensityPercent < 0.6) {
+          // Lacks printed text density and document structure
           resolve({
             isValid: false,
             error: EXACT_IMAGE_ERROR,
@@ -274,10 +271,10 @@ export async function validateIdDocumentImage(fileOrDataUrl: File | string): Pro
           return;
         }
 
-        // Test D: Reject prominent centered selfies (portrait or square with >45% skin in center and lower text density)
+        // Test D: Reject prominent centered facial selfies (predominantly face/skin with low document edge density)
         if (centerPixelsCount > 0) {
           const skinPercent = (skinTonePixelsInCenter / centerPixelsCount) * 100;
-          if (skinPercent > 45 && edgeDensityPercent < 6.0) {
+          if (skinPercent > 65 && edgeDensityPercent < 2.0) {
             // Predominant facial selfie
             resolve({
               isValid: false,
