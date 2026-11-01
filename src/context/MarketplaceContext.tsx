@@ -266,9 +266,6 @@ interface MarketplaceContextType {
   sendAdminBroadcast: (broadcast: Omit<PlatformBroadcast, 'id' | 'createdAt'>) => Promise<boolean>;
 }
 
-const INITIAL_SEED_USERS: UserProfile[] = [];
-const INITIAL_SEED_CARDS: ActivityPackageCard[] = [];
-
 const MarketplaceContext = createContext<MarketplaceContextType | undefined>(undefined);
 
 export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -303,9 +300,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   // Auto-Verification & Safety Sanitizer
   const sanitizeUserVerification = (user: UserProfile): UserProfile => {
     const docUrl = (user.idDocumentImage || user.idProofUrl || user.documentImageUrl || user.idDocumentUrl || '').trim();
+    const docIdNum = (user.idDocumentNumber || user.documentIdNumber || '').trim();
     const avatarUrl = (user.avatarUrl || '').trim();
 
-    const hasIdDoc = Boolean(docUrl);
+    const hasIdDoc = Boolean(docUrl && docIdNum);
     const cleanToken = (user.userToken || '').replace('USR-', '');
 
     // Auto-reinstatement check for suspended accounts after 7-day hold expires
@@ -335,17 +333,23 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const isRejected = user.verificationStatus === 'Rejected';
     const isVerified = isRejected 
       ? false 
-      : (user.isVerified !== undefined ? Boolean(user.isVerified) : (user.verificationStatus === 'Verified' || user.verificationStatus === 'ID Verified'));
+      : Boolean(user.isVerified || user.verificationStatus === 'Verified' || user.verificationStatus === 'ID Verified' || hasIdDoc);
     const verificationStatus: VerificationStatus = isRejected 
       ? 'Rejected' 
-      : (user.verificationStatus || (isVerified ? 'Verified' : 'Unverified'));
+      : (isVerified ? 'Verified' : (user.verificationStatus || 'Unverified'));
 
     const isSuspended = user.isSuspended !== undefined ? Boolean(user.isSuspended) : (currentAccountStatus === 'Suspended');
+    const unifiedBalance = typeof user.cancellationCreditBalance === 'number'
+      ? user.cancellationCreditBalance
+      : (typeof user.walletBalance === 'number' ? user.walletBalance : (typeof user.creditBalance === 'number' ? user.creditBalance : 0));
 
     return {
       ...user,
       avatarUrl: avatarUrl || user.avatarUrl,
-      cancellationCreditBalance: typeof user.cancellationCreditBalance === 'number' ? user.cancellationCreditBalance : 0,
+      cancellationCreditBalance: unifiedBalance,
+      walletBalance: unifiedBalance,
+      creditBalance: unifiedBalance,
+      availableCredit: unifiedBalance,
       monthlyLifelineUsed: lifelineUsed,
       monthlyLifelineMonth: lifelineMonth,
       accountStatus: currentAccountStatus,
@@ -359,9 +363,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       suspendedAt,
       prohibitedVenueAttempt,
       documentType: user.documentType || (user.idDocumentType as AllowedDocumentType) || undefined,
-      documentIdNumber: user.idDocumentNumber || user.documentIdNumber || undefined,
+      documentIdNumber: docIdNum || undefined,
       idDocumentType: user.idDocumentType || user.documentType || undefined,
-      idDocumentNumber: user.idDocumentNumber || user.documentIdNumber || undefined,
+      idDocumentNumber: docIdNum || undefined,
       idDocumentImage: docUrl || undefined,
       idProofUrl: docUrl || undefined,
       documentImageUrl: docUrl || user.documentImageUrl || undefined,
@@ -427,7 +431,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
           }
         });
 
-        // Strictly set remote users directly: no local storage merge and no resurrecting
         setUsersAndCompanions(remoteUsers);
 
         // Session recovery & Live Ban/Block Enforcement on active user across ALL phones
@@ -435,10 +438,8 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         if (activeToken) {
           const matched = remoteUsers.find((u) => u.userToken === activeToken);
           if (!matched || matched.accountStatus === 'Deleted_Archived') {
-            // User was permanently purged or deleted by Admin in Firestore -> instant force-logout on user phone!
             logOutUser();
           } else if (matched.accountStatus === 'Blocked') {
-            // User was permanently blocked by Admin in Firestore -> instant screen lock!
             setCurrentUser(matched);
             safeSetItem('sangha_v4_current_user', JSON.stringify(matched));
             openSuspensionNotice(
@@ -484,7 +485,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
     );
 
-    // 3. Real-time Activity Cards Listener (ZERO resurrecting, strict real-time single source of truth)
+    // 3. Real-time Activity Cards Listener
     const unsubCards = onSnapshot(
       collection(db, 'activityCards'),
       (snapshot) => {
@@ -499,7 +500,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
           }
         });
 
-        // Set remote cards directly: deleted cards are never resurrected
         setActivityCards(remoteCards);
       },
       (error) => {
@@ -660,13 +660,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const syncUserToFirestore = async (user: UserProfile) => {
     try {
       if (db && user.userToken) {
-        // Strip undefined fields and compress all base64 images to <= 600px, 0.6 quality (<80KB)
-        // to strictly guarantee Firestore documents never exceed 1MB limit and WebChannelConnection never fails
         const compressedUser = await compressUserProfileImages(user);
         const cleanedUser = cleanForFirestore(compressedUser);
         await setDoc(doc(db, 'users', user.userToken), cleanedUser, { merge: true });
 
-        // Also persist mirror wallet document with synced balances
         const currentBal = user.cancellationCreditBalance ?? user.walletBalance ?? user.creditBalance ?? 0;
         const cleanedWallet = cleanForFirestore({
           userToken: user.userToken,
@@ -733,7 +730,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [activeChatBookingId, setActiveChatBookingId] = useState<string | null>(null);
   const [activeReportUserToken, setActiveReportUserToken] = useState<string | null>(null);
 
-  // Legal Pages & Modals (Explicitly closed on fresh load so Home screen always defaults)
   const [activeLegalModal, setActiveLegalModal] = useState<'terms' | 'privacy' | 'refund' | null>(null);
 
   const openLegalModal = (modal: 'terms' | 'privacy' | 'refund') => {
@@ -927,7 +923,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       openSuspensionNotice(updatedCurrent, reason, `Admin Action: ${type === '7_DAYS' ? '7-Day Temporary Hold' : 'Permanent Account Ban'}`);
     }
 
-    // If permanent ban, immediately delete active companion cards from Firestore
     if (type === 'PERMANENT') {
       const cardsToDelete = activityCards.filter((c) => c.companionToken === userToken);
       setActivityCards((prev) => prev.filter((c) => c.companionToken !== userToken));
@@ -958,7 +953,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     prohibitedText?: string
   ) => {
     const nowIso = new Date().toISOString();
-    const expiryTime = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 Days
+    const expiryTime = Date.now() + 7 * 24 * 60 * 60 * 1000;
     const expiryIso = new Date(expiryTime).toISOString();
     const reason = detectedKeyword
       ? `Prohibited keyword detected: "${detectedKeyword}"`
@@ -975,20 +970,17 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       prohibitedVenueAttempt: prohibitedText,
     };
 
-    // 1. Update user account status to 'Suspended'
     setUsersAndCompanions((prev) =>
       prev.map((u) => (u.userToken === userToken ? { ...u, ...updates } : u))
     );
 
     const targetUser = usersAndCompanions.find((u) => u.userToken === userToken) || currentUser;
 
-    // 2. High-priority Audit Log for Admin Vault
     addAuditLog(
       '🚨 SAFETY VIOLATION: User Suspended for 7 Days',
       `User ${userToken} (${targetUser?.fullName || 'Booker'}) attempted booking with prohibited venue keyword [${detectedKeyword || 'UNKNOWN'}]. Attempted submission: "${prohibitedText || 'N/A'}". Account suspended until ${new Date(expiryTime).toLocaleDateString()}.`
     );
 
-    // 3. File automated Safety Report so it is tracked in Safety & Violations
     const reportToken = `SAF-SUSP-${Math.floor(1000 + Math.random() * 9000)}`;
     const autoReport: SafetyReport = {
       id: `REP-AUTO-${Date.now()}`,
@@ -1013,7 +1005,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
     }
 
-    // 4. Update currentUser and show suspension modal
     if (currentUser?.userToken === userToken) {
       const updatedCurrent: UserProfile = {
         ...currentUser,
@@ -1065,7 +1056,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   };
 
-  // On initial mount, purge any leftover hash from previous session to ensure Home screen displays cleanly
   useEffect(() => {
     if (typeof window !== 'undefined' && window.location.hash) {
       const lower = window.location.hash.toLowerCase();
@@ -1079,14 +1069,12 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   }, []);
 
-  // User-Specific Saved Companions Helper
   const getSavedCompanionsKey = (user: UserProfile | null): string | null => {
     if (!user) return null;
     const userKey = user.userToken || (user as { id?: string }).id || user.phoneNumber;
     return userKey ? `cirqlr_saved_${userKey}` : null;
   };
 
-  // Saved Companions / Shortlist - strictly user-specific
   const [savedCompanionTokens, setSavedCompanionTokens] = useState<string[]>(() => {
     try {
       const key = getSavedCompanionsKey(currentUser);
@@ -1098,7 +1086,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   });
 
-  // Re-scope and synchronize saved companions whenever currentUser logs in, registers, switches, or logs out
   useEffect(() => {
     if (!currentUser) {
       setSavedCompanionTokens([]);
@@ -1140,7 +1127,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return savedCompanionTokens.includes(companionToken);
   };
 
-  // Sync state to LocalStorage safely with QuotaExceededError protection
   useEffect(() => {
     safeSetItem('sangha_v4_settings', JSON.stringify(platformSettings));
   }, [platformSettings]);
@@ -1190,7 +1176,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     safeSetItem('cirqlr_feedbacks', JSON.stringify(platformFeedbacks));
   }, [platformFeedbacks]);
 
-  // Audit Helper
   const addAuditLog = (action: string, details: string) => {
     const newLog: AuditLog = {
       id: `LOG-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -1216,17 +1201,14 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const uDigits = (u.phoneNumber || '').replace(/\D/g, '');
       const uEmail = (u.email || '').toLowerCase();
 
-      // 10-digit mobile number match
       if (cleanDigits.length === 10) {
         if (uDigits.endsWith(cleanDigits) || cleanDigits.endsWith(uDigits)) {
           return true;
         }
       }
-      // Gmail/Email match
       if (cleanEmail.includes('@') && uEmail && uEmail === cleanEmail) {
         return true;
       }
-      // Partial phone match if >= 7 digits
       if (cleanDigits.length >= 7) {
         if (uDigits.endsWith(cleanDigits) || cleanDigits.endsWith(uDigits)) {
           return true;
@@ -1338,7 +1320,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     residentialAddress?: string,
     documentIdNumber?: string
   ) => {
-    const user = usersAndCompanions.find((u) => u.userToken === userToken);
+    const user = usersAndCompanions.find((u) => u.userToken === userToken) || (currentUser?.userToken === userToken ? currentUser : undefined);
     if (!user) return { success: false };
 
     const effectiveDocImage = (documentImageUrl || user.documentImageUrl || user.idDocumentUrl || user.idDocumentImage || user.idProofUrl || '').trim();
@@ -1356,7 +1338,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       status: isNowVerified ? 'Verified' : 'Pending Review',
     };
 
-    // Maintain complete audit history - NEVER delete prior submissions
     const updatedHistory: IdVerificationRecord[] = [...(user.verificationHistory || []), newRecord];
 
     const updatedUser: UserProfile = {
@@ -1385,7 +1366,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     syncUserToFirestore(updatedUser);
     addAuditLog(
       'ID Verification Uploaded',
-      `${userToken} uploaded ${documentType} for identity verification. Automated Instant Verification: ${isNowVerified ? 'ACTIVE & VERIFIED' : 'UNVERIFIED'}. ID record added to audit log.`
+      `${userToken} uploaded ${documentType} for identity verification. Automated Instant Verification: ${isNowVerified ? 'ACTIVE & VERIFIED' : 'UNVERIFIED'}.`
     );
     return { success: true, user: updatedUser };
   };
@@ -1406,7 +1387,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     documentImageUrl?: string;
     referralCode?: string;
   }) => {
-    // STRICT 21+ VALIDATION
     if (input.age < 21) {
       return {
         success: false,
@@ -1417,7 +1397,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const cleanDigits = input.phoneNumber.replace(/\D/g, '').slice(-10);
     const cleanEmail = input.email.trim().toLowerCase();
 
-    // Prevent duplicate accounts if Phone or Gmail is already registered
     const phoneExists = usersAndCompanions.some((u) => {
       const uDigits = u.phoneNumber.replace(/\D/g, '');
       return uDigits.endsWith(cleanDigits) || cleanDigits.endsWith(uDigits);
@@ -1444,19 +1423,16 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const randNum = Math.floor(1000 + Math.random() * 9000);
     const userToken = `USR-${statePrefix}-${randNum}`;
 
-    // Select suitable default avatar based on gender or uploaded photo
     const avatarPool = input.gender === 'Female' ? FEMALE_AVATARS : MALE_AVATARS;
     const defaultAvatar = avatarPool[Math.floor(Math.random() * avatarPool.length)];
     const chosenAvatar = input.avatarUrl && input.avatarUrl.trim() !== '' ? input.avatarUrl.trim() : defaultAvatar;
 
-    // Instant Auto-Verification only if document image, type, and ID number were uploaded (not skipped)
     const docImg = (input.documentImageUrl || '').trim();
     const docIdNum = (input.documentIdNumber || '').trim();
     const hasDoc = Boolean(docImg && input.documentType && docIdNum);
     const isVerified = hasDoc;
     const verificationStatus: VerificationStatus = hasDoc ? 'Verified' : 'Unverified';
 
-    // Build initial verification history if document uploaded at signup
     const nowIso = new Date().toISOString();
     const initialHistory: IdVerificationRecord[] = [];
     if (hasDoc && input.documentType) {
@@ -1471,7 +1447,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       });
     }
 
-    // Process Referral Code & Credit Referrer (+1 credit & +1 referral count)
     const cleanRefInput = (input.referralCode || '').trim().toUpperCase();
     let referredByUser: UserProfile | undefined;
     if (cleanRefInput) {
@@ -1499,12 +1474,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (currentUser?.userToken === refToken) {
         setCurrentUser(updatedReferrer);
       }
-      // Immediately persist referrer's reward to Firestore!
       syncUserToFirestore(updatedReferrer);
 
       addAuditLog(
         'Referral Reward Credited',
-        `User ${userToken} registered using referral code "${cleanRefInput}". Referrer ${referredByUser.fullName} (${refToken}) awarded +1 5% Fee Waiver discount credit (Total Credits: ${updatedCredits}) and Community Ambassador status.`
+        `User ${userToken} registered using referral code "${cleanRefInput}". Referrer ${referredByUser.fullName} (${refToken}) awarded +1 5% Fee Waiver discount credit.`
       );
     }
 
@@ -1552,7 +1526,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       subscriptionStatus: 'none',
       referralCode: `REF-${userToken.replace('USR-', '')}`,
       totalReferrals: 0,
-      referralCredits: referredByUser ? 1 : 0, // Two-way 5% referral credit for new user!
+      referralCredits: referredByUser ? 1 : 0,
       hasReferralWelcomeDiscount: Boolean(referredByUser),
       isCommunityAmbassador: false,
       referredByCode: cleanRefInput || undefined,
@@ -1565,12 +1539,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setCurrentUser(newUser);
     safeSetItem('cirqlr_active_user_token', newUser.userToken);
 
-    // Persist new user and initial wallet to Firestore immediately
     syncUserToFirestore(newUser);
 
     addAuditLog(
       'New User Registered',
-      `Registered account ${userToken} (${input.fullName}, ${input.gender}, ${input.city}). Address verification: ${input.documentType ? `[${input.documentType}: ${input.documentIdNumber}]` : '[Pending Upload]'}.${referredByUser ? ` Referred by ${referredByUser.fullName} (${cleanRefInput}) - 5% Welcome Credit awarded to both.` : ''}`
+      `Registered account ${userToken} (${input.fullName}, ${input.gender}, ${input.city}).`
     );
 
     return { success: true, user: newUser };
@@ -1592,7 +1565,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       return { success: false, error: 'No active user session found.' };
     }
 
-    // Safety Guard: Check if the user has an active confirmed outing, pending booking, or unresolved dispute
     const activeOutingOrDispute = bookings.find((b) => {
       const isUserInvolved =
         (b.bookerId || b.bookerToken) === currentUser.userToken ||
@@ -1610,12 +1582,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
 
     const now = Date.now();
-    const purgeTimestamp = now + 365 * 24 * 60 * 60 * 1000; // 365-day legal archive hold per DPDP Act 2023 / IT Act standards
+    const purgeTimestamp = now + 365 * 24 * 60 * 60 * 1000;
 
-    // 1. Immediately remove activity cards from Public Explore
     setActivityCards((prev) => prev.filter((c) => c.companionToken !== currentUser.userToken));
 
-    // 2. Mark account as Deleted_Archived with statutory holding dates
     setUsersAndCompanions((prev) =>
       prev.map((u) =>
         u.userToken === currentUser.userToken
@@ -1631,7 +1601,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       )
     );
 
-    // Sync to Firestore
     syncUserToFirestore({
       ...currentUser,
       accountStatus: 'Deleted_Archived',
@@ -1643,10 +1612,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Account Deleted & Consent Withdrawn',
-      `User ${currentUser.userToken} (${currentUser.fullName}) requested account deletion. Public profile and cards hidden immediately; account placed on 1-year statutory hold until ${new Date(purgeTimestamp).toLocaleDateString()}.`
+      `User ${currentUser.userToken} (${currentUser.fullName}) requested account deletion.`
     );
 
-    // 3. Immediately log out and clean session
     setCurrentUser(null);
     setIsProfileModalOpen(false);
     setActiveTab('explore');
@@ -1669,7 +1637,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       });
     }
 
-    // Force-logout immediately if the purged user is currently logged in on this client
     const activeToken = safeGetItem('cirqlr_active_user_token');
     if (currentUser?.userToken === userToken || activeToken === userToken) {
       logOutUser();
@@ -1677,7 +1644,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Permanent Account Purge',
-      `User ${userToken} permanently purged from all database records following statutory legal holding period.`
+      `User ${userToken} permanently purged from all database records.`
     );
   };
 
@@ -1690,7 +1657,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setIsProfileModalOpen(true);
   };
 
-  // Perspective 2 Founder Vault Gate
   const unlockFounderVault = () => {
     setIsFounderVaultUnlocked(true);
     try {
@@ -1711,7 +1677,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     addAuditLog('Admin Vault Locked', 'Founder logged out of Root Command Center.');
   };
 
-  // Platform Settings Controls
   const updatePlatformSettings = (newSettings: Partial<PlatformSettings>, reason?: string) => {
     setPlatformSettings((prev) => {
       const updated = { ...prev, ...newSettings };
@@ -1759,7 +1724,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   };
 
-  // Users Directory & Profile Management
   const getUserByToken = (token: string): UserProfile | undefined => {
     if (!token) return undefined;
     const clean = token.trim().toUpperCase();
@@ -1802,7 +1766,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       syncUserToFirestore(targetUser);
     }
 
-    // When account is Blocked, purge all active companion cards from Firestore & local state immediately
     if (isBlocked) {
       const cardsToDelete = activityCards.filter((c) => c.companionToken === userToken);
       setActivityCards((prev) => prev.filter((c) => c.companionToken !== userToken));
@@ -1819,7 +1782,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     );
   };
 
-  // Government ID Verification (Approve / Reject) with Firestore Persistence
   const verifyUserIdentity = async (userToken: string, isApproved: boolean = true) => {
     const status: VerificationStatus = isApproved ? 'Verified' : 'Rejected';
     const isVerified = isApproved;
@@ -1849,7 +1811,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     );
   };
 
-  // User Wallet Top Up / Add Money with Atomic Firestore Persistence
   const addUserWalletMoney = async (userToken: string, amount: number, paymentRefId?: string) => {
     if (!userToken || amount <= 0) return;
     const nowIso = new Date().toISOString();
@@ -1870,7 +1831,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const newBal = currentBal + amount;
     const newHistory = [walletTxn, ...(targetUser?.walletHistory || [])];
 
-    // Atomically update local state
     setUsersAndCompanions((prev) =>
       prev.map((u) => (u.userToken === userToken ? { ...u, cancellationCreditBalance: newBal, walletHistory: newHistory } : u))
     );
@@ -1878,7 +1838,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setCurrentUser((prev) => (prev ? { ...prev, cancellationCreditBalance: newBal, walletHistory: newHistory } : null));
     }
 
-    // Persist to Firestore: users, wallets, transactions
     if (db) {
       try {
         await setDoc(
@@ -1897,23 +1856,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
           }),
           { merge: true }
         );
-        const ledgerEntry: PaymentLedgerEntry = {
-          id: `TXN-TOPUP-${Date.now()}`,
-          razorpayRefId: refId,
-          paymentReferenceId: refId,
-          type: 'Wallet Top Up' as any,
-          bookerToken: userToken,
-          bookerName: targetUser?.fullName || 'User',
-          companionToken: userToken,
-          companionName: targetUser?.fullName || 'User',
-          grossOutingValue: amount,
-          effectiveFeePercent: 0,
-          feeAmount: amount,
-          status: 'VERIFIED & RELEASED',
-          timestamp: nowIso,
-          verifiedAt: nowIso,
-        };
-        await setDoc(doc(db, 'transactions', ledgerEntry.id), cleanForFirestore(ledgerEntry), { merge: true });
       } catch (err: any) {
         console.warn('[Firestore] addUserWalletMoney write error:', err?.message);
       }
@@ -1922,7 +1864,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     addAuditLog('Wallet Top Up', `User ${userToken} added ₹${amount} to wallet balance. Ref: ${refId}. New Balance: ₹${newBal}.`);
   };
 
-  // ADMIN PANEL MANUAL WALLET CREDIT ADJUSTMENT (+ / - ₹) with Atomic Firestore Persistence
   const adjustUserWalletCredit = async (userToken: string, deltaAmount: number, reason: string) => {
     const cleanReason = (reason || '').trim() || 'Admin Manual Wallet Adjustment';
     const nowIso = new Date().toISOString();
@@ -2025,7 +1966,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     });
     syncUserToFirestore(updatedUser);
 
-    // Also update activityCards belonging to this user so companionName and avatar reflect everywhere immediately
     const userToken = currentUser.userToken;
     setActivityCards((prev) =>
       prev.map((c) => {
@@ -2060,7 +2000,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       return { success: false, error: 'Please enter a valid Gmail / Email address (e.g. name@gmail.com).' };
     }
 
-    // Check if another account is already registered with this Gmail
     const duplicate = usersAndCompanions.some(
       (u) => u.userToken !== currentUser.userToken && (u.email || '').toLowerCase() === clean
     );
@@ -2079,13 +2018,12 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Gmail Address Linked',
-      `${currentUser.userToken} (${currentUser.fullName}) linked Gmail address: ${clean}. Saved to localStorage.`
+      `${currentUser.userToken} (${currentUser.fullName}) linked Gmail address: ${clean}.`
     );
 
     return { success: true };
   };
 
-  // Companion Pro 1-Month (30 Days) Membership - Instant Automatic Activation
   const submitProSubscriptionPayment = (companionToken: string, customRefId?: string): string => {
     const basePrice = platformSettings.proSubscriptionMonthlyPrice;
     const discount = platformSettings.proOccasionDiscountPercent;
@@ -2111,13 +2049,13 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
 
     setPaymentsLedger((prev) => [newLedgerEntry, ...prev]);
+    syncTransactionToFirestore(newLedgerEntry);
 
-    // Automatically activate Pro immediately upon Razorpay payment!
     subscribeCompanionPro(companionToken);
 
     addAuditLog(
       'Pro Subscription Paid & Activated',
-      `Companion ${companionToken} upgraded to 1-Month Pro Pass via ${refId} (₹${finalPrice}). Activated automatically.`
+      `Companion ${companionToken} upgraded to 1-Month Pro Pass via ${refId} (₹${finalPrice}).`
     );
 
     return refId;
@@ -2157,11 +2095,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Companion Pro 30-Day Pass Activated',
-      `Companion ${companionToken} upgraded to 1-Month Pro Pass. Valid until ${expiryIso.split('T')[0]}. Unlimited activity cards unlocked.`
+      `Companion ${companionToken} upgraded to 1-Month Pro Pass.`
     );
   };
 
-  // Activity Cards Management - Multi-format reliable owner matching
   const getCompanionActivityCards = (companionTokenOrId: string): ActivityPackageCard[] => {
     if (!companionTokenOrId) return [];
     const searchTarget = companionTokenOrId.trim().toUpperCase();
@@ -2203,19 +2140,16 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const companionToken = card.companionToken || currentUser.userToken;
     const authorUser = getUserByToken(companionToken) || currentUser;
 
-    // Check if user is permanently blocked
     if (authorUser.accountStatus === 'Blocked' || (authorUser as any).isBlocked) {
       openSuspensionNotice(authorUser, 'Permanent Block', 'Account access has been permanently revoked by platform security.');
       return { success: false };
     }
 
-    // Check if user is currently in 7-day restricted mode
     if (authorUser.accountStatus === 'Suspended' || authorUser.isSuspended) {
       openSuspensionNotice(authorUser);
       return { success: false };
     }
 
-    // Safety scanner on card title, venue category, and description
     const safetyCheck = checkVenueSafety(card.title, card.venueCategory, card.shortDescription);
     if (safetyCheck.isForbidden) {
       suspendUserForSafetyViolation(
@@ -2265,7 +2199,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       return;
     }
 
-    // Scan updated title, venue, and description if provided
     if (updates.title || updates.venueCategory || updates.shortDescription) {
       const safetyCheck = checkVenueSafety(
         updates.title || '',
@@ -2301,9 +2234,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     addAuditLog('Activity Card Removed', `Card ID ${id} was deleted by owner.`);
   };
 
-  // Fee Calculation Engine (Simplified: Strict 15% Base Fee + Referral Discount Only)
   const isRepeatClientEligible = (_bookerToken: string, _companionToken: string): boolean => {
-    // Repeat client discount has been completely removed across the entire platform.
     return false;
   };
 
@@ -2313,16 +2244,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     _isRepeatClient: boolean = false,
     companionReferralCredits: number = 0
   ): FeeCalculationResult => {
-    // 1. STRICT SIMPLIFIED FEE FORMULA:
-    // baseFee = Math.round(totalBookingAmount * (adminFeePercent / 100)) (Default 15%)
     const totalOutingCost = Math.round(hourlyRate * hours);
     const adminFeePercent = platformSettings.baseAcceptanceFeePercent;
     const baseFee = Math.round(totalOutingCost * (adminFeePercent / 100));
 
-    // 2. REFERRAL DISCOUNT ONLY:
-    // If Companion has referralCredits > 0, deduct 5% from baseFee:
-    // finalPlatformFee = Math.round(baseFee * 0.95)
-    // Otherwise: finalPlatformFee = baseFee (strictly 15%)
     let finalPlatformFee = baseFee;
     let isReferralDiscountApplied = false;
     let discountApplied: 'Repeat Loyalty (5%)' | 'Referral Credit (5%)' | 'None' = 'None';
@@ -2352,7 +2277,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
   };
 
-  // Bookings Lifecycle
   const createBooking = (bookingInput: {
     companionToken: string;
     activityCardId?: string;
@@ -2382,7 +2306,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       throw new Error('Account Suspended: You cannot submit outing requests while your 7-day safety hold is active.');
     }
 
-    // Defense-in-depth safety scan for forbidden accommodation keywords
     const safetyCheck = checkVenueSafety(
       bookingInput.venueName,
       bookingInput.venueAddress,
@@ -2445,7 +2368,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Outing Request Created',
-      `Booking ${newBooking.bookingToken} initiated: ${currentUser.fullName} -> ${newBooking.companionName} (${newBooking.activityTitle} at ${newBooking.venueName}). Discount applied: [${feeResult.discountApplied}]. Effective Fee: ${feeResult.effectiveFeePercent}%.`
+      `Booking ${newBooking.bookingToken} initiated: ${currentUser.fullName} -> ${newBooking.companionName} (${newBooking.activityTitle} at ${newBooking.venueName}).`
     );
 
     return newBooking;
@@ -2462,10 +2385,9 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     );
     addAuditLog(
       'Outing Request Rejected',
-      `Booking ${booking.bookingToken || bookingId} declined by Companion ${booking.companionName}. Rejection email webhook triggered.`
+      `Booking ${booking.bookingToken || bookingId} declined by Companion ${booking.companionName}.`
     );
 
-    // Trigger Google Apps Script email webhook so Booker receives instant rejection notification
     const bookerUser = getUserByToken(booking.bookerToken);
     const toEmail = booking.bookerEmail || bookerUser?.email || 'dasabir618@gmail.com';
 
@@ -2509,7 +2431,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const booking = bookings.find((b) => b.id === bookingId);
     if (!booking) return;
 
-    // STRICT CHAT LOCK: Immediately close active chat if it was open for this booking
     if (activeChatBookingId === bookingId) {
       setActiveChatBookingId(null);
     }
@@ -2551,7 +2472,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       bookingId,
       senderToken: 'SYSTEM',
       senderName: 'Cirqlr Security Protocol',
-      text: '🔒 Outing marked as Completed by Companion. Encrypted chat channel has permanently closed and locked. Thank you for adhering to our public platonic guidelines.',
+      text: '🔒 Outing marked as Completed by Companion. Encrypted chat channel has permanently closed and locked.',
       timestamp: new Date().toISOString(),
       isSystemNotice: true,
     };
@@ -2560,7 +2481,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setDoc(doc(db, 'chatMessages', systemMsg.id), cleanForFirestore(systemMsg), { merge: true }).catch(console.warn);
     }
 
-    addAuditLog('Outing Completed', `Booking ${booking.bookingToken} marked as Completed by Companion. Chat channel locked.`);
+    addAuditLog('Outing Completed', `Booking ${booking.bookingToken} marked as Completed by Companion.`);
   };
 
   const submitBookingRating = (bookingId: string, rating: number, review: string) => {
@@ -2603,7 +2524,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Companion Review Submitted',
-      `Booker rated Companion ${booking.companionName} (${booking.companionToken}) ${rating} Stars for booking ${booking.bookingToken}. Review: "${review.slice(0, 40)}..."`
+      `Booker rated Companion ${booking.companionName} (${booking.companionToken}) ${rating} Stars for booking ${booking.bookingToken}.`
     );
   };
 
@@ -2644,11 +2565,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Booker Review Submitted',
-      `Companion rated Booker ${booking.bookerName} (${booking.bookerToken}) ${rating} Stars for booking ${booking.bookingToken}. Review: "${review.slice(0, 40)}..."`
+      `Companion rated Booker ${booking.bookerName} (${booking.bookerToken}) ${rating} Stars for booking ${booking.bookingToken}.`
     );
   };
 
-  // Free Reschedule Engine (100% Zero-Loss / Zero-Penalty)
   const rescheduleBooking = (
     bookingId: string,
     newDate: string,
@@ -2694,7 +2614,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       bookingId,
       senderToken: 'SYSTEM',
       senderName: 'Cirqlr Reschedule Engine',
-      text: `🗓️ Free Reschedule Confirmed: Outing updated to ${newDate} at ${newTime} by ${reschedulerName}.${note ? ` Note: "${note}"` : ''} 100% Free: No extra fee or wallet deductions applied.`,
+      text: `🗓️ Free Reschedule Confirmed: Outing updated to ${newDate} at ${newTime} by ${reschedulerName}.${note ? ` Note: "${note}"` : ''}`,
       timestamp: nowIso,
       isSystemNotice: true,
     };
@@ -2705,13 +2625,12 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Free Outing Reschedule Executed',
-      `Booking ${booking.bookingToken} rescheduled to ${newDate} at ${newTime} by ${reschedulerName} (${reschedulerToken}). Zero platform fee charged.`
+      `Booking ${booking.bookingToken} rescheduled to ${newDate} at ${newTime} by ${reschedulerName}.`
     );
 
     return true;
   };
 
-  // 1-CLICK DISPUTE ACTION: REFUND FEE TO COMPANION WALLET & BLOCK BOOKER
   const resolveBookingDisputeRefundAndBlock = (bookingId: string, reason?: string) => {
     const booking = bookings.find((b) => b.id === bookingId);
     if (!booking) return;
@@ -2734,7 +2653,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       bookingId: booking.id,
     };
 
-    // 1. Credit 100% Platform Fee to Companion's Fee Wallet
     setUsersAndCompanions((prev) =>
       prev.map((u) => {
         if (u.userToken === booking.companionToken) {
@@ -2746,7 +2664,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
             walletHistory: history,
           };
         }
-        // 2. Immediately Block / Suspend Offending Booker
         if (u.userToken === booking.bookerToken) {
           return {
             ...u,
@@ -2782,7 +2699,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       });
     }
 
-    // 3. Update Booking Status
     const newStatus = `Disputed & Fee Refunded to Companion (Booker Blocked)` as any;
     setBookings((prev) =>
       prev.map((b) =>
@@ -2798,7 +2714,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       )
     );
 
-    // 4. Update Ledger Entry
     setPaymentsLedger((prev) =>
       prev.map((entry) => {
         const matchesBooking =
@@ -2815,7 +2730,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       })
     );
 
-    // 5. Create Safety Report & Audit Trail
     const disputeReport: SafetyReport = {
       id: `REP-DISP-${Date.now()}`,
       reportToken: `SR-DISP-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -2832,7 +2746,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     addAuditLog(
       'Dispute Resolved: Fee Refunded & Booker Blocked',
-      `Booking ${booking.bookingToken} disputed. Refunded ₹${feeToRefund} to Companion ${booking.companionName} (${booking.companionToken}) wallet. Offending Booker ${booking.bookerName} (${booking.bookerToken}) permanently blocked. Reason: "${disputeReason}".`
+      `Booking ${booking.bookingToken} disputed. Refunded ₹${feeToRefund} to Companion ${booking.companionName} (${booking.companionToken}) wallet.`
     );
 
     if (db) {
@@ -2868,9 +2782,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   };
 
-  // CASE A — CANCELLED BY BOOKER (Zero Companion Fault):
-  // Automatically credit 100% of the exact Rupee Platform Fee paid into Companion's cancellationCreditBalance wallet.
-  // Zero lifeline deducted from Companion.
   const cancelBookingByBookerWithCredit = (bookingId: string, reason: string = 'Cancelled by Booker') => {
     const booking = bookings.find((b) => b.id === bookingId);
     if (!booking) return;
@@ -2878,11 +2789,12 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const cancelledTimestamp = new Date().toISOString();
     const companion = getUserByToken(booking.companionToken);
     const liveFee = computeLiveBookingFee(booking, bookings, companion, platformSettings);
-    const feeToCredit = liveFee.finalPlatformFee;
+    const feeToCredit = booking.paidPlatformFeeAmount || liveFee.finalPlatformFee;
     const companionToken = booking.companionToken;
 
-    // 1. Credit 100% of exact rupee platform fee into Companion's cancellationCreditBalance
-    if (feeToCredit > 0) {
+    let updatedCompanionObj: UserProfile | undefined;
+
+    if (feeToCredit > 0 && companion) {
       const wltId = `wlt_can_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
       const creditTxn: WalletTransactionEntry = {
         id: wltId,
@@ -2894,78 +2806,59 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         bookingId: booking.id,
       };
 
-      setUsersAndCompanions((prev) => {
-        const next = prev.map((u) => {
-          if (u.userToken === companionToken) {
-            const currentBal = u.cancellationCreditBalance || 0;
-            const history = [creditTxn, ...(u.walletHistory || [])];
-            return {
-              ...u,
-              cancellationCreditBalance: currentBal + feeToCredit,
-              walletHistory: history,
-            };
-          }
-          return u;
-        });
-        safeSetItem('sangha_v4_users', JSON.stringify(next));
-        return next;
-      });
+      const currentBal = companion.cancellationCreditBalance ?? companion.walletBalance ?? companion.creditBalance ?? 0;
+      const newBal = currentBal + feeToCredit;
+      const history = [creditTxn, ...(companion.walletHistory || [])];
+
+      updatedCompanionObj = {
+        ...companion,
+        cancellationCreditBalance: newBal,
+        walletBalance: newBal,
+        creditBalance: newBal,
+        availableCredit: newBal,
+        walletHistory: history,
+      };
+
+      setUsersAndCompanions((prev) =>
+        prev.map((u) => (u.userToken === companionToken ? updatedCompanionObj! : u))
+      );
 
       if (currentUser?.userToken === companionToken) {
-        setCurrentUser((prev) => {
-          if (!prev) return null;
-          const currentBal = prev.cancellationCreditBalance || 0;
-          const history = [creditTxn, ...(prev.walletHistory || [])];
-          const updated = {
-            ...prev,
-            cancellationCreditBalance: currentBal + feeToCredit,
-            walletHistory: history,
-          };
-          safeSetItem('sangha_v4_current_user', JSON.stringify(updated));
-          return updated;
-        });
+        setCurrentUser(updatedCompanionObj);
       }
+
+      syncUserToFirestore(updatedCompanionObj);
     }
 
     const newStatus = `Cancelled by Booker (₹${feeToCredit} Fee Credited to Companion)`;
+    const updatedBookingRecord: BookingRecord = {
+      ...booking,
+      status: newStatus as any,
+      cancellationReason: reason,
+      cancelledAt: cancelledTimestamp,
+      cancelledByRole: 'Booker',
+      cancelledByToken: currentUser?.userToken || booking.bookerToken,
+      cancellationFeeRefundedAmount: feeToCredit,
+    };
 
-    // 2. Update booking status
-    setBookings((prev) => {
-      const updated = prev.map((b) =>
-        b.id === bookingId
-          ? {
-              ...b,
-              status: newStatus as any,
-              cancellationReason: reason,
-              cancelledAt: cancelledTimestamp,
-              cancelledByRole: 'Booker' as const,
-              cancelledByToken: currentUser?.userToken || booking.bookerToken,
-              cancellationFeeRefundedAmount: feeToCredit,
-            }
-          : b
-      );
-      safeSetItem('sangha_v4_bookings', JSON.stringify(updated));
-      return updated;
-    });
+    setBookings((prev) => prev.map((b) => (b.id === bookingId ? updatedBookingRecord : b)));
+    syncBookingToFirestore(updatedBookingRecord);
 
-    // 3. Lock & close chat if active
     if (activeChatBookingId === bookingId) {
       setActiveChatBookingId(null);
     }
 
-    // 4. Chat system notice
     const systemNotice: ChatMessage = {
       id: `MSG-CANCEL-${Date.now()}`,
       bookingId,
       senderToken: 'SYSTEM',
       senderName: 'Cirqlr Security Protocol',
-      text: `🛑 Outing cancelled by Booker. 100% of Platform Acceptance Fee (₹${feeToCredit}) has been automatically credited into Companion ${booking.companionName}'s Fee Credit Wallet. Zero lifeline deducted.`,
+      text: `🛑 Outing cancelled by Booker. 100% of Platform Acceptance Fee (₹${feeToCredit}) has been automatically credited into Companion ${booking.companionName}'s Fee Credit Wallet.`,
       timestamp: cancelledTimestamp,
       isSystemNotice: true,
     };
     setChatMessages((prev) => [...prev, systemNotice]);
 
-    // 5. Update ledger entry
     setPaymentsLedger((prev) =>
       prev.map((entry) => {
         const matchesBooking =
@@ -2982,30 +2875,11 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       })
     );
 
-    // 6. Audit log
     addAuditLog(
       'Booking Cancelled by Booker (Companion Auto-Credited)',
-      `Booking ${booking.bookingToken} cancelled by ${booking.bookerName}. 100% Platform Fee of ₹${feeToCredit} credited to Companion ${booking.companionName} (${companionToken}) Fee Wallet. Zero lifeline deducted.`
+      `Booking ${booking.bookingToken} cancelled by ${booking.bookerName}. ₹${feeToCredit} credited to Companion ${booking.companionName}.`
     );
 
-    // 7. Sync to Firestore
-    syncBookingToFirestore({
-      ...booking,
-      status: newStatus as any,
-      cancellationReason: reason,
-      cancelledAt: cancelledTimestamp,
-      cancelledByRole: 'Booker',
-      cancelledByToken: currentUser?.userToken || booking.bookerToken,
-      cancellationFeeRefundedAmount: feeToCredit,
-    });
-    if (companion) {
-      syncUserToFirestore({
-        ...companion,
-        cancellationCreditBalance: (companion.cancellationCreditBalance || 0) + feeToCredit,
-      });
-    }
-
-    // 8. Automatic Cancellation Email notification to Companion
     sendCancellationEmail({
       type: 'booker_cancelled',
       bookingToken: booking.bookingToken || booking.id,
@@ -3024,7 +2898,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     });
   };
 
-  // CASE B — CANCELLED BY COMPANION (3-Hour Notice & 1 Monthly Emergency Lifeline Parameter)
   const cancelBookingByCompanionWithLifeline = (
     bookingId: string,
     reason: string = 'Cancelled by Companion'
@@ -3036,7 +2909,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const currentMonth = getCurrentCalendarMonth();
     const companionUser = getUserByToken(booking.companionToken) || currentUser;
     const liveFee = computeLiveBookingFee(booking, bookings, companionUser, platformSettings);
-    const feeToCredit = liveFee.finalPlatformFee;
+    const feeToCredit = booking.paidPlatformFeeAmount || liveFee.finalPlatformFee;
 
     const hoursUntilOuting = getTimeUntilOutingHours(booking.outingDate, booking.outingTime);
     const isMoreThan3Hours = hoursUntilOuting > 3;
@@ -3048,8 +2921,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     const isEligible = isMoreThan3Hours && hasLifelineAvailable;
 
-    if (isEligible) {
-      // Eligible: Credit fee & consume 1 monthly lifeline
+    if (isEligible && companionUser) {
       const wltId = `wlt_life_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
       const lifelineTxn: WalletTransactionEntry = {
         id: wltId,
@@ -3061,66 +2933,45 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         bookingId: booking.id,
       };
 
-      setUsersAndCompanions((prev) => {
-        const next = prev.map((u) => {
-          if (u.userToken === booking.companionToken) {
-            const currentBal = u.cancellationCreditBalance || 0;
-            const history = [lifelineTxn, ...(u.walletHistory || [])];
-            return {
-              ...u,
-              cancellationCreditBalance: currentBal + feeToCredit,
-              monthlyLifelineUsed: 1,
-              monthlyLifelineMonth: currentMonth,
-              walletHistory: history,
-            };
-          }
-          return u;
-        });
-        safeSetItem('sangha_v4_users', JSON.stringify(next));
-        return next;
-      });
+      const currentBal = companionUser.cancellationCreditBalance ?? companionUser.walletBalance ?? 0;
+      const newBal = currentBal + feeToCredit;
+      const history = [lifelineTxn, ...(companionUser.walletHistory || [])];
+
+      const updatedCompanion: UserProfile = {
+        ...companionUser,
+        cancellationCreditBalance: newBal,
+        walletBalance: newBal,
+        creditBalance: newBal,
+        availableCredit: newBal,
+        monthlyLifelineUsed: 1,
+        monthlyLifelineMonth: currentMonth,
+        walletHistory: history,
+      };
+
+      setUsersAndCompanions((prev) =>
+        prev.map((u) => (u.userToken === booking.companionToken ? updatedCompanion : u))
+      );
 
       if (currentUser?.userToken === booking.companionToken) {
-        setCurrentUser((prev) => {
-          if (!prev) return null;
-          const currentBal = prev.cancellationCreditBalance || 0;
-          const history = [lifelineTxn, ...(prev.walletHistory || [])];
-          const updated = {
-            ...prev,
-            cancellationCreditBalance: currentBal + feeToCredit,
-            monthlyLifelineUsed: 1,
-            monthlyLifelineMonth: currentMonth,
-            walletHistory: history,
-          };
-          safeSetItem('sangha_v4_current_user', JSON.stringify(updated));
-          return updated;
-        });
+        setCurrentUser(updatedCompanion);
       }
 
-      const newStatus = `Cancelled by Companion (Emergency Lifeline Used)`;
+      syncUserToFirestore(updatedCompanion);
 
-      setBookings((prev) => {
-        const updated = prev.map((b) =>
-          b.id === bookingId
-            ? {
-                ...b,
-                status: newStatus as any,
-                cancellationReason: reason,
-                cancelledAt: cancelledTimestamp,
-                cancelledByRole: 'Companion' as const,
-                cancelledByToken: booking.companionToken,
-                cancellationFeeRefundedAmount: feeToCredit,
-                emergencyLifelineUsed: true,
-              }
-            : b
-        );
-        try {
-          localStorage.setItem('sangha_v4_bookings', JSON.stringify(updated));
-        } catch (err) {
-          console.error('[Cancel Booking Storage Error]', err);
-        }
-        return updated;
-      });
+      const newStatus = `Cancelled by Companion (Emergency Lifeline Used)`;
+      const updatedBookingRecord: BookingRecord = {
+        ...booking,
+        status: newStatus as any,
+        cancellationReason: reason,
+        cancelledAt: cancelledTimestamp,
+        cancelledByRole: 'Companion',
+        cancelledByToken: booking.companionToken,
+        cancellationFeeRefundedAmount: feeToCredit,
+        emergencyLifelineUsed: true,
+      };
+
+      setBookings((prev) => prev.map((b) => (b.id === bookingId ? updatedBookingRecord : b)));
+      syncBookingToFirestore(updatedBookingRecord);
 
       if (activeChatBookingId === bookingId) {
         setActiveChatBookingId(null);
@@ -3136,53 +2987,15 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         isSystemNotice: true,
       };
       setChatMessages((prev) => [...prev, systemNotice]);
-
-      setPaymentsLedger((prev) =>
-        prev.map((entry) => {
-          const matchesBooking =
-            (entry.bookingId && entry.bookingId === booking.id) ||
-            (entry.bookingToken && entry.bookingToken === booking.bookingToken);
-          if (matchesBooking && entry.type === 'Booking Acceptance Fee') {
-            return {
-              ...entry,
-              status: 'REFUND DUE (Cancelled Booking)' as const,
-              refundNotes: `Companion cancelled using Emergency Lifeline on ${new Date(cancelledTimestamp).toLocaleDateString()}. ₹${feeToCredit} credited to wallet.`,
-            };
-          }
-          return entry;
-        })
-      );
-
-      addAuditLog(
-        'Emergency Lifeline Cancellation Used',
-        `Companion ${booking.companionName} (${booking.companionToken}) cancelled booking ${booking.bookingToken} using 1/1 Monthly Emergency Lifeline (>3 hrs notice). ₹${feeToCredit} credited to wallet.`
-      );
-
-      // Sync to Firestore
-      syncBookingToFirestore({
-        ...booking,
-        status: newStatus as any,
-        cancellationReason: reason,
-        cancelledAt: cancelledTimestamp,
-        cancelledByRole: 'Companion',
-        cancelledByToken: booking.companionToken,
-        cancellationFeeRefundedAmount: feeToCredit,
-        emergencyLifelineUsed: true,
-      });
-
-      if (companionUser) {
-        syncUserToFirestore({
-          ...companionUser,
-          cancellationCreditBalance: (companionUser.cancellationCreditBalance || 0) + feeToCredit,
-          monthlyLifelineUsed: 1,
-          monthlyLifelineMonth: currentMonth,
-        });
-      }
       if (db) {
         setDoc(doc(db, 'chatMessages', systemNotice.id), cleanForFirestore(systemNotice), { merge: true }).catch(console.warn);
       }
 
-      // Automatic Cancellation Email notification to Booker
+      addAuditLog(
+        'Emergency Lifeline Cancellation Used',
+        `Companion ${booking.companionName} (${booking.companionToken}) cancelled booking ${booking.bookingToken} using 1/1 Monthly Emergency Lifeline. ₹${feeToCredit} credited to wallet.`
+      );
+
       const bookerUser = getUserByToken(booking.bookerToken);
       sendCancellationEmail({
         type: 'companion_cancelled',
@@ -3203,26 +3016,19 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
       return { eligibleForCredit: true, creditedAmount: feeToCredit };
     } else {
-      // Non-refundable fee forfeiture
       const newStatus = `Cancelled by Companion (Fee Forfeited)`;
+      const updatedBookingRecord: BookingRecord = {
+        ...booking,
+        status: newStatus as any,
+        cancellationReason: reason,
+        cancelledAt: cancelledTimestamp,
+        cancelledByRole: 'Companion',
+        cancelledByToken: booking.companionToken,
+        cancellationFeeForfeited: true,
+      };
 
-      setBookings((prev) => {
-        const updated = prev.map((b) =>
-          b.id === bookingId
-            ? {
-                ...b,
-                status: newStatus as any,
-                cancellationReason: reason,
-                cancelledAt: cancelledTimestamp,
-                cancelledByRole: 'Companion' as const,
-                cancelledByToken: booking.companionToken,
-                cancellationFeeForfeited: true,
-              }
-            : b
-        );
-        safeSetItem('sangha_v4_bookings', JSON.stringify(updated));
-        return updated;
-      });
+      setBookings((prev) => prev.map((b) => (b.id === bookingId ? updatedBookingRecord : b)));
+      syncBookingToFirestore(updatedBookingRecord);
 
       if (activeChatBookingId === bookingId) {
         setActiveChatBookingId(null);
@@ -3233,32 +3039,15 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         bookingId,
         senderToken: 'SYSTEM',
         senderName: 'Cirqlr Security Protocol',
-        text: `🛑 Outing cancelled by Companion (${isMoreThan3Hours ? 'Monthly lifeline already exhausted' : 'Less than 3 hours notice'}). Platform Acceptance Fee of ₹${feeToCredit} strictly forfeited to platform.`,
+        text: `🛑 Outing cancelled by Companion. Platform Acceptance Fee of ₹${feeToCredit} forfeited.`,
         timestamp: cancelledTimestamp,
         isSystemNotice: true,
       };
       setChatMessages((prev) => [...prev, systemNotice]);
-
-      addAuditLog(
-        'Non-Refundable Companion Cancellation (Fee Forfeited)',
-        `Companion ${booking.companionName} (${booking.companionToken}) cancelled booking ${booking.bookingToken}. Acceptance fee of ₹${feeToCredit} forfeited (Less than 3 hrs notice or lifeline exhausted).`
-      );
-
-      // Sync to Firestore
-      syncBookingToFirestore({
-        ...booking,
-        status: newStatus as any,
-        cancellationReason: reason,
-        cancelledAt: cancelledTimestamp,
-        cancelledByRole: 'Companion',
-        cancelledByToken: booking.companionToken,
-        cancellationFeeForfeited: true,
-      });
       if (db) {
         setDoc(doc(db, 'chatMessages', systemNotice.id), cleanForFirestore(systemNotice), { merge: true }).catch(console.warn);
       }
 
-      // Automatic Cancellation Email notification to Booker
       const bookerUser = getUserByToken(booking.bookerToken);
       sendCancellationEmail({
         type: 'companion_cancelled',
@@ -3285,7 +3074,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const booking = bookings.find((b) => b.id === bookingId);
     if (!booking) return;
 
-    // If booking was Confirmed, route through automated credit rules
     if (booking.status === 'Confirmed') {
       if (currentUser?.userToken === booking.companionToken) {
         cancelBookingByCompanionWithLifeline(bookingId, reason);
@@ -3297,21 +3085,15 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
 
     const cancelledTimestamp = new Date().toISOString();
+    const updatedBookingRecord: BookingRecord = {
+      ...booking,
+      status: 'Cancelled' as const,
+      cancellationReason: reason,
+      cancelledAt: cancelledTimestamp,
+    };
 
-    setBookings((prev) => {
-      const updated = prev.map((b) =>
-        b.id === bookingId
-          ? {
-              ...b,
-              status: 'Cancelled' as const,
-              cancellationReason: reason,
-              cancelledAt: cancelledTimestamp,
-            }
-          : b
-      );
-      safeSetItem('sangha_v4_bookings', JSON.stringify(updated));
-      return updated;
-    });
+    setBookings((prev) => prev.map((b) => (b.id === bookingId ? updatedBookingRecord : b)));
+    syncBookingToFirestore(updatedBookingRecord);
 
     if (activeChatBookingId === bookingId) {
       setActiveChatBookingId(null);
@@ -3327,21 +3109,14 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       isSystemNotice: true,
     };
     setChatMessages((prev) => [...prev, systemNotice]);
-
-    addAuditLog(
-      'Booking Cancelled',
-      `Booking ${booking.bookingToken} cancelled. Outing with ${booking.companionName} set to Cancelled.`
-    );
-
-    syncBookingToFirestore({
-      ...booking,
-      status: 'Cancelled' as const,
-      cancellationReason: reason,
-      cancelledAt: cancelledTimestamp,
-    });
     if (db) {
       setDoc(doc(db, 'chatMessages', systemNotice.id), cleanForFirestore(systemNotice), { merge: true }).catch(console.warn);
     }
+
+    addAuditLog(
+      'Booking Cancelled',
+      `Booking ${booking.bookingToken} cancelled.`
+    );
   };
 
   const cancelBookingByBooker = (bookingId: string, reason: string, penaltyRazorpayRefId: string) => {
@@ -3351,11 +3126,10 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const cancelledTimestamp = new Date().toISOString();
     const companion = getUserByToken(booking.companionToken);
     const liveFee = computeLiveBookingFee(booking, bookings, companion, platformSettings);
-    const feeToRefund = liveFee.finalPlatformFee;
+    const feeToRefund = booking.paidPlatformFeeAmount || liveFee.finalPlatformFee;
     const companionToken = booking.companionToken;
 
-    // 1. Credit 100% of Acceptance Fee back into Companion's wallet
-    if (feeToRefund > 0) {
+    if (feeToRefund > 0 && companion) {
       const wltRefundId = `wlt_ref_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
       const refundTxn: WalletTransactionEntry = {
         id: wltRefundId,
@@ -3367,68 +3141,30 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         bookingId: booking.id,
       };
 
+      const currentBal = companion.cancellationCreditBalance ?? companion.walletBalance ?? companion.creditBalance ?? 0;
+      const updatedBal = currentBal + feeToRefund;
+      const history = [refundTxn, ...(companion.walletHistory || [])];
+
+      const updatedComp: UserProfile = {
+        ...companion,
+        cancellationCreditBalance: updatedBal,
+        walletBalance: updatedBal,
+        creditBalance: updatedBal,
+        availableCredit: updatedBal,
+        walletHistory: history,
+      };
+
       setUsersAndCompanions((prev) =>
-        prev.map((u) => {
-          if (u.userToken === companionToken) {
-            const currentBal = u.cancellationCreditBalance ?? u.walletBalance ?? u.creditBalance ?? 0;
-            const updatedBal = currentBal + feeToRefund;
-            const history = [refundTxn, ...(u.walletHistory || [])];
-            return {
-              ...u,
-              cancellationCreditBalance: updatedBal,
-              walletBalance: updatedBal,
-              creditBalance: updatedBal,
-              availableCredit: updatedBal,
-              walletHistory: history,
-            };
-          }
-          return u;
-        })
+        prev.map((u) => (u.userToken === companionToken ? updatedComp : u))
       );
 
       if (currentUser?.userToken === companionToken) {
-        setCurrentUser((prev) => {
-          if (!prev) return null;
-          const currentBal = prev.cancellationCreditBalance ?? prev.walletBalance ?? prev.creditBalance ?? 0;
-          const updatedBal = currentBal + feeToRefund;
-          const history = [refundTxn, ...(prev.walletHistory || [])];
-          return {
-            ...prev,
-            cancellationCreditBalance: updatedBal,
-            walletBalance: updatedBal,
-            creditBalance: updatedBal,
-            availableCredit: updatedBal,
-            walletHistory: history,
-          };
-        });
+        setCurrentUser(updatedComp);
       }
 
-      if (db && companionToken) {
-        const compCurrent = getUserByToken(companionToken);
-        const compBal = (compCurrent?.cancellationCreditBalance ?? compCurrent?.walletBalance ?? 0) + feeToRefund;
-        const compHistory = [refundTxn, ...(compCurrent?.walletHistory || [])];
-        setDoc(doc(db, 'users', companionToken), cleanForFirestore({
-          cancellationCreditBalance: compBal,
-          walletBalance: compBal,
-          creditBalance: compBal,
-          availableCredit: compBal,
-          walletHistory: compHistory,
-        }), { merge: true }).catch(console.warn);
-
-        setDoc(doc(db, 'wallets', companionToken), cleanForFirestore({
-          userToken: companionToken,
-          userName: companion?.fullName || booking.companionName,
-          balance: compBal,
-          cancellationCreditBalance: compBal,
-          walletBalance: compBal,
-          creditBalance: compBal,
-          walletHistory: compHistory,
-          updatedAt: cancelledTimestamp,
-        }), { merge: true }).catch(console.warn);
-      }
+      syncUserToFirestore(updatedComp);
     }
 
-    // 2. Mark booking 'Cancelled by Booker'
     const newStatus = 'Cancelled by Booker';
     const updatedBooking: BookingRecord = {
       ...booking,
@@ -3443,20 +3179,18 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
 
     setBookings((prev) => prev.map((b) => (b.id === bookingId ? updatedBooking : b)));
-    safeSetItem('sangha_v4_bookings', JSON.stringify(bookings.map((b) => (b.id === bookingId ? updatedBooking : b))));
     syncBookingToFirestore(updatedBooking);
 
     if (activeChatBookingId === bookingId) {
       setActiveChatBookingId(null);
     }
 
-    // 3. Post system notice in encrypted chat
     const systemNotice: ChatMessage = {
       id: `MSG-CANCEL-${Date.now()}`,
       bookingId,
       senderToken: 'SYSTEM',
       senderName: 'Cirqlr Security Protocol',
-      text: `🛑 Outing cancelled by Booker. Mandatory ₹100 cancellation penalty paid via ${penaltyRazorpayRefId}. 100% of Platform Acceptance Fee (₹${feeToRefund}) has been credited back to Companion's Fee Wallet. E2E channel closed.`,
+      text: `🛑 Outing cancelled by Booker. Mandatory ₹100 cancellation penalty paid via ${penaltyRazorpayRefId}. 100% of Platform Acceptance Fee (₹${feeToRefund}) has been credited back to Companion's Fee Wallet.`,
       timestamp: cancelledTimestamp,
       isSystemNotice: true,
     };
@@ -3465,7 +3199,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setDoc(doc(db, 'chatMessages', systemNotice.id), cleanForFirestore(systemNotice), { merge: true }).catch(console.warn);
     }
 
-    // 4. Record ₹100 Booker Penalty ledger entry
     const penaltyEntryId = `TXN-PENALTY-${Date.now()}`;
     const penaltyLedgerEntry: PaymentLedgerEntry = {
       id: penaltyEntryId,
@@ -3491,55 +3224,13 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setPaymentsLedger((prev) => [penaltyLedgerEntry, ...prev]);
     syncTransactionToFirestore(penaltyLedgerEntry);
 
-    // 5. Add to booker's walletHistory as a debit entry
-    const bookerToken = booking.bookerToken;
-    const bookerPenaltyTxn: WalletTransactionEntry = {
-      id: `wlt_pen_${Date.now()}`,
-      paymentReferenceId: penaltyRazorpayRefId,
-      type: 'debit',
-      amount: 100,
-      reason: `Cancellation Penalty Paid: ${booking.bookingToken || booking.id}`,
-      timestamp: cancelledTimestamp,
-      bookingId: booking.id,
-    };
-    if (bookerToken) {
-      const bookerUser = getUserByToken(bookerToken);
-      const bHistory = [bookerPenaltyTxn, ...(bookerUser?.walletHistory || [])];
-      setUsersAndCompanions((prev) =>
-        prev.map((u) => (u.userToken === bookerToken ? { ...u, walletHistory: bHistory } : u))
-      );
-      if (currentUser?.userToken === bookerToken) {
-        setCurrentUser((prev) => (prev ? { ...prev, walletHistory: bHistory } : null));
-      }
-      if (db) {
-        setDoc(doc(db, 'users', bookerToken), cleanForFirestore({ walletHistory: bHistory }), { merge: true }).catch(console.warn);
-      }
-    }
-
-    // 6. Update payments ledger acceptance fee status to REFUNDED TO COMPANION WALLET
-    setPaymentsLedger((prev) =>
-      prev.map((entry) => {
-        const matchesBooking =
-          (entry.bookingId && entry.bookingId === booking.id) ||
-          (entry.bookingToken && entry.bookingToken === booking.bookingToken);
-        if (matchesBooking && entry.type === 'Booking Acceptance Fee') {
-          return {
-            ...entry,
-            status: 'REFUND DUE (Cancelled Booking)' as const,
-            refundNotes: `Booker cancelled with ₹100 penalty. ₹${feeToRefund} acceptance fee credited back to companion wallet.`,
-          };
-        }
-        return entry;
-      })
-    );
-
     addAuditLog(
       'Booker Cancelled Outing (₹100 Penalty Paid)',
       `Booker ${booking.bookerName} cancelled Confirmed booking ${booking.bookingToken}. ₹100 penalty paid (${penaltyRazorpayRefId}). ₹${feeToRefund} refunded to Companion ${booking.companionName}.`
     );
   };
 
-  // Payment Hold & Ledger - Instant Automatic Confirmation with Anti-Abuse Exact Rupee Credit Redemption
+  // FIXED WALLET DEDUCTION & ACCEPTANCE FEE PAYMENT (No stale overwrite & no duplicate transactions)
   const submitAcceptanceFeePayment = (
     bookingId: string, 
     razorpayRefId: string, 
@@ -3549,237 +3240,92 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!booking) return;
 
     const confirmedIso = new Date().toISOString();
-    const liveFee = computeLiveBookingFee(booking, bookings, currentUser, platformSettings);
+    const existingComp = getUserByToken(booking.companionToken) || currentUser;
+    const liveFee = computeLiveBookingFee(booking, bookings, existingComp, platformSettings);
     const bookingAcceptanceFee = liveFee.finalPlatformFee;
     const netPaidViaGateway = Math.max(0, bookingAcceptanceFee - creditUsed);
     const is100PercentCredit = creditUsed > 0 && netPaidViaGateway === 0;
 
-    // Canonical unified payment/transaction ID (pay_... for gateway or wlt_... for wallet redemption)
     const canonicalPaymentId = (razorpayRefId || '').startsWith('pay_') || (razorpayRefId || '').startsWith('wlt_')
       ? razorpayRefId
       : (is100PercentCredit
-          ? `wlt_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`
+          ? `wlt_use_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`
           : `pay_${razorpayRefId}`);
 
-    let activeLedgerTxn: PaymentLedgerEntry;
+    const ledgerEntryId = is100PercentCredit ? canonicalPaymentId : `TXN-${Date.now()}`;
+    const activeLedgerTxn: PaymentLedgerEntry = {
+      id: ledgerEntryId,
+      razorpayRefId: canonicalPaymentId,
+      paymentReferenceId: canonicalPaymentId,
+      bookingId: booking.id,
+      bookingToken: booking.bookingToken,
+      type: 'Booking Acceptance Fee',
+      companionToken: booking.companionToken,
+      companionName: booking.companionName,
+      bookerToken: booking.bookerToken,
+      bookerName: booking.bookerName,
+      outingTitle: booking.activityTitle,
+      grossOutingValue: booking.totalOutingCost,
+      effectiveFeePercent: liveFee.effectiveFeePercent,
+      feeAmount: is100PercentCredit ? creditUsed : netPaidViaGateway,
+      amount: is100PercentCredit ? creditUsed : netPaidViaGateway,
+      status: 'VERIFIED & RELEASED',
+      timestamp: confirmedIso,
+      verifiedAt: confirmedIso,
+      refundNotes: creditUsed > 0 ? `₹${creditUsed} wallet credit redeemed` : undefined,
+    };
 
-    if (is100PercentCredit) {
-      // SCENARIO A: 100% Free Acceptance using Credit Wallet (₹0 Gateway Payment)
-      // Strictly ONE single debit transaction is logged. Zero duplicate acceptance fees or positive credit entries.
-      activeLedgerTxn = {
-        id: canonicalPaymentId,
-        razorpayRefId: canonicalPaymentId,
-        paymentReferenceId: canonicalPaymentId,
-        bookingId: booking.id,
-        bookingToken: booking.bookingToken,
-        type: 'Wallet Credit Redeemed',
-        companionToken: booking.companionToken,
-        companionName: booking.companionName,
-        bookerToken: booking.bookerToken,
-        bookerName: booking.bookerName,
-        outingTitle: booking.activityTitle,
-        grossOutingValue: booking.totalOutingCost,
-        effectiveFeePercent: liveFee.effectiveFeePercent,
-        feeAmount: creditUsed,
-        amount: creditUsed,
-        status: 'VERIFIED & RELEASED',
-        timestamp: confirmedIso,
-        verifiedAt: confirmedIso,
-        details: `Fee Credit Redeemed for Booking Acceptance (${booking.bookingToken})`,
-      };
+    setPaymentsLedger((prev) => [activeLedgerTxn, ...prev.filter((p) => p.id !== ledgerEntryId)]);
+    syncTransactionToFirestore(activeLedgerTxn);
 
-      setPaymentsLedger((prev) => [activeLedgerTxn, ...prev.filter((p) => p.id !== canonicalPaymentId && p.paymentReferenceId !== canonicalPaymentId)]);
-      syncTransactionToFirestore(activeLedgerTxn);
-    } else {
-      // SCENARIO B: Gateway Payment (Partial or 100% via Razorpay)
-      const ledgerEntryId = `TXN-${Date.now()}`;
-      activeLedgerTxn = {
-        id: ledgerEntryId,
-        razorpayRefId: canonicalPaymentId,
-        paymentReferenceId: canonicalPaymentId,
-        bookingId: booking.id,
-        bookingToken: booking.bookingToken,
-        type: 'Booking Acceptance Fee',
-        companionToken: booking.companionToken,
-        companionName: booking.companionName,
-        bookerToken: booking.bookerToken,
-        bookerName: booking.bookerName,
-        outingTitle: booking.activityTitle,
-        grossOutingValue: booking.totalOutingCost,
-        effectiveFeePercent: liveFee.effectiveFeePercent,
-        feeAmount: netPaidViaGateway,
-        amount: netPaidViaGateway,
-        status: 'VERIFIED & RELEASED',
-        timestamp: confirmedIso,
-        verifiedAt: confirmedIso,
-        refundNotes: creditUsed > 0 ? `₹${creditUsed} credit applied + ₹${netPaidViaGateway} via ${canonicalPaymentId}` : undefined,
-      };
+    // Atomically compute new wallet balance & referral credits in ONE unified object so Firestore is never overwritten by stale state!
+    const compToken = booking.companionToken;
+    const currentCredits = Number(existingComp?.cancellationCreditBalance ?? existingComp?.walletBalance ?? existingComp?.creditBalance ?? 0);
+    const updatedBal = creditUsed > 0 ? Math.max(0, currentCredits - Number(creditUsed)) : currentCredits;
 
-      setPaymentsLedger((prev) => [activeLedgerTxn, ...prev]);
-      syncTransactionToFirestore(activeLedgerTxn);
-    }
-
-    // If credit was used, deduct it immediately from Companion's cancellationCreditBalance and record transaction history
+    let updatedHistory = [...(existingComp?.walletHistory || [])];
     if (creditUsed > 0) {
-      const compToken = booking.companionToken;
-      const wltDebitId = `wlt_use_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
       const debitTxn: WalletTransactionEntry = {
-        id: wltDebitId,
-        paymentReferenceId: wltDebitId,
+        id: canonicalPaymentId,
+        paymentReferenceId: canonicalPaymentId,
         type: 'debit',
         amount: creditUsed,
-        reason: `Wallet Credit Redeemed: Booking Acceptance Fee (${booking.bookingToken || booking.id})`,
+        reason: `Acceptance Fee Paid via Wallet (${booking.bookingToken || booking.id})`,
         timestamp: confirmedIso,
         bookingId: booking.id,
       };
-
-      const existingComp = getUserByToken(compToken);
-      const currentCredits = existingComp?.cancellationCreditBalance ?? existingComp?.walletBalance ?? existingComp?.creditBalance ?? 0;
-      const updatedBal = Math.max(0, Number(currentCredits) - Number(creditUsed));
-      const updatedHistory = [debitTxn, ...(existingComp?.walletHistory || [])];
-
-      setUsersAndCompanions((prev) => {
-        return prev.map((u) => {
-          if (u.userToken === compToken) {
-            return {
-              ...u,
-              cancellationCreditBalance: updatedBal,
-              walletBalance: updatedBal,
-              creditBalance: updatedBal,
-              availableCredit: updatedBal,
-              walletHistory: updatedHistory,
-            };
-          }
-          return u;
-        });
-      });
-
-      if (currentUser?.userToken === compToken) {
-        setCurrentUser((prev) => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            cancellationCreditBalance: updatedBal,
-            walletBalance: updatedBal,
-            creditBalance: updatedBal,
-            availableCredit: updatedBal,
-            walletHistory: updatedHistory,
-          };
-        });
-      }
-
-      if (db && compToken) {
-        setDoc(doc(db, 'users', compToken), cleanForFirestore({
-          cancellationCreditBalance: updatedBal,
-          walletBalance: updatedBal,
-          creditBalance: updatedBal,
-          availableCredit: updatedBal,
-          walletHistory: updatedHistory,
-        }), { merge: true }).catch(console.warn);
-
-        setDoc(doc(db, 'wallets', compToken), cleanForFirestore({
-          userToken: compToken,
-          userName: existingComp?.fullName || booking.companionName,
-          balance: updatedBal,
-          cancellationCreditBalance: updatedBal,
-          walletBalance: updatedBal,
-          creditBalance: updatedBal,
-          walletHistory: updatedHistory,
-          updatedAt: confirmedIso,
-        }), { merge: true }).catch(console.warn);
-
-        setDoc(doc(db, 'transactions', wltDebitId), cleanForFirestore({
-          id: wltDebitId,
-          paymentReferenceId: wltDebitId,
-          type: 'Wallet Credit Redeemed',
-          companionToken: compToken,
-          companionName: booking.companionName,
-          feeAmount: creditUsed,
-          amount: creditUsed,
-          bookingId: booking.id,
-          bookingToken: booking.bookingToken,
-          status: 'VERIFIED & RELEASED',
-          timestamp: confirmedIso,
-          details: `Redeemed for Booking Acceptance Fee (${booking.bookingToken})`,
-        }), { merge: true }).catch(console.warn);
-      }
-
-      addAuditLog(
-        'Cancellation Fee Credit Redeemed',
-        `Companion ${booking.companionName} (${compToken}) redeemed ₹${creditUsed} fee credit for Booking ${booking.bookingToken}. Net Gateway Paid: ₹${netPaidViaGateway}.`
-      );
+      updatedHistory = [debitTxn, ...updatedHistory];
     }
 
-    // If a 5% Referral Credit was applied to this booking, deduct 1 credit from the companion
-    if (booking.discountApplied === 'Referral Credit (5%)' && !booking.referralCreditConsumed) {
-      const compToken = booking.companionToken;
-      setUsersAndCompanions((prev) => {
-        const next = prev.map((u) => {
-          if (u.userToken === compToken) {
-            const currentCredits = u.referralCredits || 0;
-            const updatedCredits = Math.max(0, currentCredits - 1);
-            return { ...u, referralCredits: updatedCredits };
-          }
-          return u;
-        });
-        safeSetItem('sangha_v4_users', JSON.stringify(next));
-        return next;
-      });
-      if (currentUser?.userToken === compToken) {
-        setCurrentUser((prev) => {
-          if (!prev) return null;
-          const currentCredits = prev.referralCredits || 0;
-          const updated = { ...prev, referralCredits: Math.max(0, currentCredits - 1) };
-          safeSetItem('sangha_v4_current_user', JSON.stringify(updated));
-          return updated;
-        });
-      }
-      addAuditLog(
-        'Referral Discount Credit Redeemed',
-        `Companion ${booking.companionName} (${compToken}) redeemed 1 Referral Discount Credit for Booking ${booking.bookingToken}. 5% fee waiver executed.`
+    const currentRefCredits = existingComp?.referralCredits || 0;
+    const updatedRefCredits = (booking.discountApplied === 'Referral Credit (5%)' && !booking.referralCreditConsumed)
+      ? Math.max(0, currentRefCredits - 1)
+      : currentRefCredits;
+
+    if (existingComp && compToken) {
+      const finalUpdatedCompanion: UserProfile = {
+        ...existingComp,
+        cancellationCreditBalance: updatedBal,
+        walletBalance: updatedBal,
+        creditBalance: updatedBal,
+        availableCredit: updatedBal,
+        walletHistory: updatedHistory,
+        referralCredits: updatedRefCredits,
+      };
+
+      setUsersAndCompanions((prev) =>
+        prev.map((u) => (u.userToken === compToken ? finalUpdatedCompanion : u))
       );
+
+      if (currentUser?.userToken === compToken) {
+        setCurrentUser(finalUpdatedCompanion);
+      }
+
+      // Single atomic write to Firestore with the newly deducted balance!
+      syncUserToFirestore(finalUpdatedCompanion);
     }
 
-    setBookings((prev) => {
-      const next = prev.map((b) =>
-        b.id === bookingId
-          ? {
-              ...b,
-              status: 'Confirmed' as const,
-              razorpayRefId: canonicalPaymentId,
-              paymentReferenceId: canonicalPaymentId,
-              acceptanceFee: bookingAcceptanceFee,
-              feePercentSnapshot: liveFee.effectiveFeePercent,
-              paidPlatformFeeAmount: bookingAcceptanceFee,
-              creditUsedForAcceptance: creditUsed,
-              referralCreditConsumed: true,
-              referralCreditUsed: booking.discountApplied === 'Referral Credit (5%)',
-            }
-          : b
-      );
-      safeSetItem('sangha_v4_bookings', JSON.stringify(next));
-      return next;
-    });
-
-    const systemMsg: ChatMessage = {
-      id: `MSG-${Date.now()}`,
-      bookingId: booking.id,
-      senderToken: 'SYSTEM',
-      senderName: 'Cirqlr Security Protocol',
-      text: creditUsed > 0
-        ? `🔒 End-to-End Encrypted Outing Channel Active. Acceptance fee paid using ₹${creditUsed} credit balance${netPaidViaGateway > 0 ? ` + ₹${netPaidViaGateway} via Razorpay` : ''}. Coordinate your meeting landmark inside the verified public venue.`
-        : '🔒 End-to-End Encrypted Outing Channel Active. Personal contact exchange is prohibited. Coordinate your meeting landmark inside the verified public venue.',
-      timestamp: confirmedIso,
-      isSystemNotice: true,
-    };
-    setChatMessages((prev) => [...prev, systemMsg]);
-
-    addAuditLog(
-      'Acceptance Fee Paid & Outing Confirmed',
-      `Payment ${canonicalPaymentId} (₹${bookingAcceptanceFee} total, ₹${creditUsed} credit applied) confirmed for booking ${booking.bookingToken}. Outing is Confirmed and chat channel unlocked immediately.`
-    );
-
-    syncBookingToFirestore({
+    const updatedBookingRecord: BookingRecord = {
       ...booking,
       status: 'Confirmed' as const,
       razorpayRefId: canonicalPaymentId,
@@ -3790,13 +3336,37 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
       creditUsedForAcceptance: creditUsed,
       referralCreditConsumed: true,
       referralCreditUsed: booking.discountApplied === 'Referral Credit (5%)',
+    };
+
+    setBookings((prev) => {
+      const next = prev.map((b) => (b.id === bookingId ? updatedBookingRecord : b));
+      safeSetItem('sangha_v4_bookings', JSON.stringify(next));
+      return next;
     });
-    const updatedCompanionUser = getUserByToken(booking.companionToken);
-    if (updatedCompanionUser) {
-      syncUserToFirestore(updatedCompanionUser);
+
+    syncBookingToFirestore(updatedBookingRecord);
+
+    const systemMsg: ChatMessage = {
+      id: `MSG-${Date.now()}`,
+      bookingId: booking.id,
+      senderToken: 'SYSTEM',
+      senderName: 'Cirqlr Security Protocol',
+      text: creditUsed > 0
+        ? `🔒 End-to-End Encrypted Outing Channel Active. Acceptance fee paid using ₹${creditUsed} wallet credit${netPaidViaGateway > 0 ? ` + ₹${netPaidViaGateway} via Razorpay` : ''}.`
+        : '🔒 End-to-End Encrypted Outing Channel Active. Coordinate your meeting landmark inside the verified public venue.',
+      timestamp: confirmedIso,
+      isSystemNotice: true,
+    };
+    setChatMessages((prev) => [...prev, systemMsg]);
+    if (db) {
+      setDoc(doc(db, 'chatMessages', systemMsg.id), cleanForFirestore(systemMsg), { merge: true }).catch(console.warn);
     }
 
-    // Trigger Google Apps Script email webhook to deliver 100% Confirmed HTML email to Booker's Gmail
+    addAuditLog(
+      'Acceptance Fee Paid & Outing Confirmed',
+      `Payment ${canonicalPaymentId} (₹${bookingAcceptanceFee} total, ₹${creditUsed} credit applied) confirmed for booking ${booking.bookingToken}.`
+    );
+
     const bookerUser = getUserByToken(booking.bookerToken);
     const toEmail = booking.bookerEmail || bookerUser?.email || 'dasabir618@gmail.com';
 
@@ -3852,7 +3422,7 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
         bookingId: entry.bookingId,
         senderToken: 'SYSTEM',
         senderName: 'Cirqlr Security Protocol',
-        text: '🔒 End-to-End Encrypted Outing Channel Active. Personal contact exchange is prohibited. Coordinate your meeting landmark inside the verified public venue.',
+        text: '🔒 End-to-End Encrypted Outing Channel Active. Coordinate your meeting landmark inside the verified public venue.',
         timestamp: new Date().toISOString(),
         isSystemNotice: true,
       };
@@ -3986,7 +3556,6 @@ export const MarketplaceProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   };
 
-  // Safety Reports
   const fileSafetyReport = async (reportInput: {
     reportedUserToken: string;
     category: SafetyReport['category'];
