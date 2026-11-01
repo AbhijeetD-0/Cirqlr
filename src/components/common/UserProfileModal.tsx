@@ -37,32 +37,127 @@ import { useRazorpayPayment } from '../../hooks/useRazorpayPayment';
 
 export type ProfileTab = 'gallery_ratings' | 'edit_profile' | 'wallet_lifeline' | 'refer_earn' | 'pro';
 
-// Reliable Government ID Number validator supporting PAN, Voter ID, and Indian Driving License (including DigiLocker formats)
+// 1. Strict Government ID Number Format Validator
 const isValidGovIdFormat = (docType: AllowedDocumentType, rawId: string): { isValid: boolean; error?: string } => {
   const clean = (rawId || '').trim().toUpperCase().replace(/[\s-]/g, '');
   if (!clean) {
-    return { isValid: false, error: 'Please enter your Government ID Number.' };
+    return { isValid: false, error: 'Please enter your Government ID Number first.' };
   }
   if (docType === 'PAN Card') {
     if (!/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(clean)) {
-      return { isValid: false, error: 'Invalid PAN format. Expected format: ABCDE1234F' };
+      return { isValid: false, error: 'Invalid PAN Card Number. Format must be 5 letters, 4 digits, 1 letter (e.g., ABCDE1234F).' };
     }
     return { isValid: true };
   }
   if (docType.includes('Voter')) {
     if (!/^[A-Z]{3}[0-9]{7}$/.test(clean)) {
-      return { isValid: false, error: 'Invalid Voter ID (EPIC) format. Expected format: ABC1234567' };
+      return { isValid: false, error: 'Invalid Voter ID (EPIC) Number. Format must be 3 letters + 7 digits (e.g., ABC1234567).' };
     }
     return { isValid: true };
   }
-  // Driving License: e.g. WB17 20250001080 or WB0120180012345 (2 state letters + 13 digits/alphanumeric)
-  if (!/^[A-Z]{2}[0-9A-Z]{11,15}$/.test(clean)) {
+  // Indian Driving License: 2 State letters + 2 RTO digits + 4 Year digits + 7 digits (15 chars total, e.g. WB17 20250001080)
+  if (!/^[A-Z]{2}[0-9]{2}(19|20)[0-9]{2}[0-9]{7}$/.test(clean)) {
     const fallback = validateIdNumber(docType, rawId);
     if (!fallback.isValid) {
-      return { isValid: false, error: 'Invalid Driving License number. Expected format: WB17 20250001080' };
+      return { isValid: false, error: 'Invalid Driving License Number. Must be a valid 15-character Indian DL (e.g., WB17 20250001080).' };
     }
   }
   return { isValid: true };
+};
+
+// 2. Strict Document Image Scanner (Rejects dark screenshots/Reels, blank photos, and casual selfies; accepts real ID cards & DigiLocker)
+const inspectDocumentImageAuthenticity = (dataUrl: string): Promise<{ isValid: boolean; error?: string }> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = img.width;
+      const h = img.height;
+      if (w < 220 || h < 180) {
+        resolve({ isValid: false, error: 'Verification Failed: Image resolution is too low to read Government ID details.' });
+        return;
+      }
+
+      const canvas = document.createElement('canvas');
+      const sampleW = 200;
+      const sampleH = 200;
+      canvas.width = sampleW;
+      canvas.height = sampleH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve({ isValid: true });
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0, sampleW, sampleH);
+      const { data } = ctx.getImageData(0, 0, sampleW, sampleH);
+
+      let darkPixels = 0;
+      let brightPaperPixels = 0;
+      let skinTonePixels = 0;
+      let highContrastTextTransitions = 0;
+      const totalPixels = sampleW * sampleH;
+
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        if (lum < 55) darkPixels++;
+        if (lum > 165 && Math.abs(r - g) < 35 && Math.abs(g - b) < 35) brightPaperPixels++;
+
+        // Detect large selfie skin-tone dominance
+        if (r > 95 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 15) {
+          skinTonePixels++;
+        }
+
+        if (i >= 4) {
+          const prevLum = 0.299 * data[i - 4] + 0.587 * data[i - 3] + 0.114 * data[i - 2];
+          if (Math.abs(lum - prevLum) > 45) {
+            highContrastTextTransitions++;
+          }
+        }
+      }
+
+      const darkRatio = darkPixels / totalPixels;
+      const brightRatio = brightPaperPixels / totalPixels;
+      const skinRatio = skinTonePixels / totalPixels;
+      const textEdgeRatio = highContrastTextTransitions / totalPixels;
+
+      // 1. Reject dark mode phone screenshots (like Instagram Reels, gaming screens, or dark wallpapers)
+      if (darkRatio > 0.38) {
+        resolve({
+          isValid: false,
+          error: 'Verification Failed: Dark screenshots, Reels, or dim photos are not valid Government IDs. Please upload a clear, bright document scan or DigiLocker certificate.',
+        });
+        return;
+      }
+
+      // 2. Reject casual selfies / portraits where skin tone dominates or document background is missing
+      if (skinRatio > 0.32 || brightRatio < 0.18) {
+        resolve({
+          isValid: false,
+          error: 'Verification Failed: Casual photos or selfies are not accepted. Please upload your official PAN Card, Voter ID, or Driving License.',
+        });
+        return;
+      }
+
+      // 3. Reject blank/solid images without printed text lines
+      if (textEdgeRatio < 0.025) {
+        resolve({
+          isValid: false,
+          error: 'Verification Failed: No readable printed Government ID text detected in this image.',
+        });
+        return;
+      }
+
+      resolve({ isValid: true });
+    };
+    img.onerror = () => {
+      resolve({ isValid: false, error: 'Invalid image file. Please select a clear JPG or PNG photo of your ID.' });
+    };
+    img.src = dataUrl;
+  });
 };
 
 export const UserProfileModal: React.FC = () => {
@@ -85,7 +180,6 @@ export const UserProfileModal: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ProfileTab>('gallery_ratings');
   const [copiedReferral, setCopiedReferral] = useState<boolean>(false);
 
-  // Account Deletion & Consent Withdrawal States (DPDP Act 2023)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
   const [deleteReason, setDeleteReason] = useState<string>('');
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -159,13 +253,9 @@ export const UserProfileModal: React.FC = () => {
   if (!isProfileModalOpen || !currentUser) return null;
 
   const isPro = Boolean(currentUser.isProCompanion || currentUser.isPremiumCompanion);
-  const hasUploadedDoc = Boolean(
-    (currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim() &&
-    (currentUser.idDocumentNumber || currentUser.documentIdNumber || '').trim()
-  );
   const isVerified = Boolean(
     currentUser.verificationStatus !== 'Rejected' &&
-    (currentUser.isVerified || currentUser.verificationStatus === 'Verified' || hasUploadedDoc)
+    (currentUser.isVerified || currentUser.verificationStatus === 'Verified')
   );
 
   const basePrice = platformSettings.proSubscriptionMonthlyPrice;
@@ -215,7 +305,7 @@ export const UserProfileModal: React.FC = () => {
     }
   };
 
-  // Reliable Document Upload (Supports DigiLocker & Camera Photos without false OCR rejection)
+  // Document Upload with Strict Anti-Screenshot / Anti-Selfie Inspection + ID Format Validation
   const handleDocImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -227,38 +317,40 @@ export const UserProfileModal: React.FC = () => {
       return;
     }
 
+    // Require valid ID number before accepting document image
+    const cleanIdNum = documentIdNumber.trim().toUpperCase();
+    const idCheck = isValidGovIdFormat(documentType, cleanIdNum);
+    if (!idCheck.isValid) {
+      setDocValidationError(idCheck.error || 'Please enter a valid Government ID Number first before uploading the document.');
+      e.target.value = '';
+      return;
+    }
+
     setIsValidatingDoc(true);
     try {
       const compressed = await compressImageFile(file, 600, 600, 0.6);
-      if (compressed) {
-        setDocumentImageUrl(compressed);
-        if (documentIdNumber.trim()) {
-          const numVal = isValidGovIdFormat(documentType, documentIdNumber);
-          if (numVal.isValid) {
-            submitAddressVerification(
-              currentUser.userToken,
-              documentType,
-              compressed,
-              residentialAddress.trim() || currentUser.residentialAddress,
-              documentIdNumber.trim().toUpperCase()
-            );
-            setSaveSuccess(true);
-            setTimeout(() => setSaveSuccess(false), 3000);
-          } else {
-            setDocValidationError(numVal.error || 'Please enter a valid Government ID number above.');
-          }
-        }
+      if (!compressed) {
+        setDocValidationError('Could not process image. Please try another clear photo.');
+        setIsValidatingDoc(false);
+        return;
       }
+
+      // Check image authenticity (blocks dark screenshots/Reels, selfies, and blank images)
+      const imgCheck = await inspectDocumentImageAuthenticity(compressed);
+      if (!imgCheck.isValid) {
+        setDocValidationError(imgCheck.error || 'Invalid ID document image.');
+        e.target.value = '';
+        setIsValidatingDoc(false);
+        return;
+      }
+
+      setDocumentImageUrl(compressed);
+      setDocValidationError(null);
     } catch {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          setDocumentImageUrl(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
+      setDocValidationError('Failed to validate document image. Please upload a clear photo of your ID.');
     } finally {
       setIsValidatingDoc(false);
+      e.target.value = '';
     }
   };
 
@@ -267,8 +359,8 @@ export const UserProfileModal: React.FC = () => {
     setDocValidationError(null);
 
     const trimmedName = fullName.trim();
-    if (!trimmedName) {
-      setDocValidationError('Full Legal Name cannot be empty.');
+    if (!trimmedName || trimmedName.length < 3) {
+      setDocValidationError('Please enter your complete Full Legal Name (minimum 3 characters).');
       return;
     }
 
@@ -288,30 +380,37 @@ export const UserProfileModal: React.FC = () => {
       .map((a) => a.trim())
       .filter(Boolean);
 
-    const effectiveDocImage = (documentImageUrl || currentUser.idDocumentImage || currentUser.idProofUrl || currentUser.documentImageUrl || currentUser.idDocumentUrl || '').trim();
-    const cleanIdNum = documentIdNumber.trim().toUpperCase() || (currentUser.idDocumentNumber || currentUser.documentIdNumber || '').trim().toUpperCase();
+    const effectiveDocImage = (documentImageUrl || '').trim();
+    const cleanIdNum = documentIdNumber.trim().toUpperCase();
 
+    // Validate ID if provided
     let isNowAutoVerified = false;
     if (effectiveDocImage || cleanIdNum) {
       if (effectiveDocImage && !cleanIdNum) {
-        setDocValidationError('Please enter your Government ID Number along with the uploaded document.');
+        setDocValidationError('Government ID Number is required when uploading an ID document.');
         return;
       }
-      if (cleanIdNum) {
-        const numVal = isValidGovIdFormat(documentType, cleanIdNum);
-        if (!numVal.isValid) {
-          setDocValidationError(numVal.error || 'Invalid ID number format.');
-          return;
-        }
+      if (cleanIdNum && !effectiveDocImage) {
+        setDocValidationError('Please upload a clear photo of your Government ID document to match the ID number.');
+        return;
       }
-      if (effectiveDocImage && cleanIdNum) {
-        isNowAutoVerified = true;
+      const numVal = isValidGovIdFormat(documentType, cleanIdNum);
+      if (!numVal.isValid) {
+        setDocValidationError(numVal.error || 'Invalid Government ID number format.');
+        return;
       }
+      const imgCheck = await inspectDocumentImageAuthenticity(effectiveDocImage);
+      if (!imgCheck.isValid) {
+        setDocValidationError(imgCheck.error || 'Invalid Government ID image.');
+        return;
+      }
+      isNowAutoVerified = true;
     }
 
     const trimmedAvatar = avatarUrl.trim() || currentUser.avatarUrl;
     const finalVerifiedState = isNowAutoVerified || Boolean(currentUser.isVerified && currentUser.verificationStatus !== 'Rejected');
 
+    // Single unified update call so submitAddressVerification never overwrites the new Full Legal Name!
     updateCurrentUserProfile({
       fullName: trimmedName,
       name: trimmedName,
@@ -337,20 +436,10 @@ export const UserProfileModal: React.FC = () => {
       verificationStatus: finalVerifiedState ? 'Verified' : (currentUser.verificationStatus || 'Unverified'),
     });
 
-    if (effectiveDocImage && cleanIdNum) {
-      submitAddressVerification(
-        currentUser.userToken,
-        documentType,
-        effectiveDocImage,
-        residentialAddress.trim() || currentUser.residentialAddress,
-        cleanIdNum
-      );
-    }
-
     saveUserToSheet({
-      fullName: trimmedName || currentUser.fullName,
+      fullName: trimmedName,
       mobile: currentUser.phoneNumber,
-      email: trimmedEmail || currentUser.email,
+      email: trimmedEmail,
       age: Math.max(21, Number(age)) || currentUser.age,
       gender: gender || currentUser.gender,
       city: city || currentUser.city,
@@ -359,7 +448,7 @@ export const UserProfileModal: React.FC = () => {
     setSaveSuccess(true);
     setTimeout(() => {
       setSaveSuccess(false);
-    }, 2500);
+    }, 3000);
   };
 
   const handleSubscribePro = () => {
@@ -386,21 +475,24 @@ export const UserProfileModal: React.FC = () => {
     });
   };
 
-  // Compile BOTH Companion & Booker received reviews so reviews are never empty!
+  // Compile authentic user-written reviews (Both Companion & Booker reviews)
   const companionReviews = bookings
     .filter(
       (b) =>
         (b.companionToken === currentUser.userToken || b.companionId === currentUser.userToken) &&
         (b.ratingSubmitted || b.bookerRatingSubmitted || b.bookerRating || b.userRating)
     )
-    .map((b) => ({
-      id: `${b.id}-comp`,
-      reviewerName: b.bookerName || 'Verified Outing Booker',
-      rating: b.bookerRating || b.userRating || 5,
-      date: b.outingDate || new Date().toISOString().split('T')[0],
-      outingTitle: b.activityTitle || 'Verified Social Outing',
-      comment: b.bookerReview || b.userReview || 'Great outing experience, punctual and polite.',
-    }));
+    .map((b: any) => {
+      const exactText = (b.bookerReview || b.userReview || b.reviewText || b.review || b.comment || '').trim();
+      return {
+        id: `${b.id}-comp`,
+        reviewerName: b.bookerName || 'Verified Booker',
+        rating: Number(b.bookerRating || b.userRating || 5),
+        date: b.outingDate || new Date().toISOString().split('T')[0],
+        outingTitle: b.activityTitle || 'Public Social Outing',
+        comment: exactText || 'Rated 5 Stars for this public outing.',
+      };
+    });
 
   const bookerReviews = bookings
     .filter(
@@ -408,14 +500,17 @@ export const UserProfileModal: React.FC = () => {
         (b.bookerToken === currentUser.userToken || b.bookerId === currentUser.userToken) &&
         (b.companionRatingSubmitted || b.companionRating)
     )
-    .map((b) => ({
-      id: `${b.id}-booker`,
-      reviewerName: b.companionName || 'Verified Companion',
-      rating: b.companionRating || 5,
-      date: b.outingDate || new Date().toISOString().split('T')[0],
-      outingTitle: b.activityTitle || 'Verified Social Outing',
-      comment: b.companionReview || 'Polite and respectful outing participant.',
-    }));
+    .map((b: any) => {
+      const exactText = (b.companionReview || b.reviewText || b.review || b.comment || '').trim();
+      return {
+        id: `${b.id}-booker`,
+        reviewerName: b.companionName || 'Verified Companion',
+        rating: Number(b.companionRating || 5),
+        date: b.outingDate || new Date().toISOString().split('T')[0],
+        outingTitle: b.activityTitle || 'Public Social Outing',
+        comment: exactText || 'Rated 5 Stars for this public outing.',
+      };
+    });
 
   const allReviews = [...companionReviews, ...bookerReviews];
 
@@ -432,10 +527,10 @@ export const UserProfileModal: React.FC = () => {
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4 animate-fadeIn">
         <div className="bg-slate-900/95 backdrop-blur-xl rounded-3xl w-full max-w-full sm:max-w-xl md:max-w-3xl overflow-hidden shadow-2xl border border-slate-800 text-slate-100 flex flex-col max-h-[92vh] m-2 sm:m-4 md:m-6">
           
-          {/* TOP HEADER: Profile Photo (with Google-style Blue/Gold Pro Ring if Pro), Name, USR ID, Verification */}
+          {/* TOP HEADER */}
           <div className="bg-slate-950/90 text-white px-5 sm:px-7 py-4 flex items-center justify-between shrink-0 border-b border-slate-800">
             <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-              <div className={`relative shrink-0 ${isPro ? 'p-0.5 rounded-full bg-gradient-to-tr from-blue-500 via-cyan-400 to-amber-400 shadow-lg shadow-blue-500/30' : ''}`}>
+              <div className={`relative shrink-0 ${isPro ? 'p-0.5 rounded-full bg-gradient-to-tr from-blue-500 via-cyan-400 to-amber-400 shadow-lg shadow-amber-500/30' : ''}`}>
                 {currentUser.avatarUrl && currentUser.avatarUrl.trim() !== '' ? (
                   <img
                     src={currentUser.avatarUrl}
@@ -585,7 +680,7 @@ export const UserProfileModal: React.FC = () => {
               onClick={() => setActiveTab('pro')}
               className={`px-3 sm:px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shrink-0 ${
                 activeTab === 'pro'
-                  ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md shadow-purple-900/40'
+                  ? 'bg-gradient-to-r from-amber-500 to-yellow-600 text-slate-950 shadow-md shadow-amber-900/40'
                   : 'bg-slate-900/90 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800'
               }`}
             >
@@ -600,7 +695,7 @@ export const UserProfileModal: React.FC = () => {
             {saveSuccess && (
               <div className="p-3 bg-emerald-950/80 border border-emerald-700/60 text-emerald-200 rounded-xl text-xs font-bold flex items-center gap-2 animate-fadeIn shadow-lg">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Profile updated &amp; saved to live server successfully!</span>
+                <span>Profile name &amp; settings saved to live server successfully!</span>
               </div>
             )}
 
@@ -721,7 +816,7 @@ export const UserProfileModal: React.FC = () => {
                         </h4>
                       </div>
                       <p className="text-xs text-slate-400 mt-1">
-                        Authentic feedback from verified public outing participants.
+                        Authentic feedback written by verified outing participants.
                       </p>
                     </div>
 
@@ -780,7 +875,7 @@ export const UserProfileModal: React.FC = () => {
                             Outing: {rev.outingTitle}
                           </div>
 
-                          <p className="text-xs text-slate-300 italic leading-relaxed">
+                          <p className="text-xs text-slate-200 leading-relaxed">
                             "{rev.comment}"
                           </p>
                         </div>
@@ -953,7 +1048,7 @@ export const UserProfileModal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* MY PAYMENT & WALLET TRANSACTION HISTORY (Deduplicated) */}
+                  {/* MY PAYMENT & WALLET TRANSACTION HISTORY */}
                   {(() => {
                     interface CombinedFinancialTxn {
                       id: string;
@@ -1361,7 +1456,7 @@ export const UserProfileModal: React.FC = () => {
                             Address &amp; Government ID Verification
                           </span>
                           <span className="text-[10px] text-slate-400">
-                            Enter valid Government ID number and upload clear ID / DigiLocker image for instant verification.
+                            Step 1: Enter valid ID number • Step 2: Upload clear original ID or DigiLocker certificate • Step 3: Click Save Profile Changes.
                           </span>
                         </div>
                       </div>
@@ -1385,7 +1480,7 @@ export const UserProfileModal: React.FC = () => {
                     {isValidatingDoc && (
                       <div className="p-2.5 bg-indigo-950/70 border border-indigo-800 rounded-xl text-cyan-300 text-xs flex items-center gap-2">
                         <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
-                        <span>Compressing &amp; saving document...</span>
+                        <span>Scanning document clarity &amp; rejecting invalid screenshots...</span>
                       </div>
                     )}
 
@@ -1459,11 +1554,11 @@ export const UserProfileModal: React.FC = () => {
                             </div>
                             <div>
                               <span className="text-xs font-bold text-white block">
-                                {documentType} On File
+                                {documentType} Selected
                               </span>
                               <span className="text-[10px] text-emerald-300 font-semibold flex items-center gap-1 mt-0.5">
                                 <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                                <span>Uploaded &amp; Ready</span>
+                                <span>Click "Save Profile Changes" below to finalize</span>
                               </span>
                             </div>
                           </div>
@@ -1503,7 +1598,7 @@ export const UserProfileModal: React.FC = () => {
                                 No Government ID Document Uploaded Yet
                               </span>
                               <span className="text-[10px] text-amber-300/80">
-                                Upload a photo or DigiLocker copy of your Voter ID, Driving License, or PAN Card.
+                                Enter your ID number above, then upload a clear photo or DigiLocker copy of your ID.
                               </span>
                             </div>
                           </div>
@@ -1624,48 +1719,123 @@ export const UserProfileModal: React.FC = () => {
               </div>
             )}
 
-            {/* TAB 5: UPGRADE TO PRO */}
+            {/* ============================================================= */}
+            {/* TAB 5: 👑 UPGRADE TO PRO (COMPLETE CIRQLR PRO BENEFITS)       */}
+            {/* ============================================================= */}
             {activeTab === 'pro' && (
-              <div className="bg-gradient-to-br from-slate-900/90 via-slate-900/80 to-amber-950/30 rounded-2xl border border-amber-600/40 p-5 sm:p-6 shadow-xl space-y-5 relative overflow-hidden animate-fadeIn">
+              <div className="bg-gradient-to-br from-slate-900/95 via-slate-900/90 to-amber-950/40 rounded-2xl border border-amber-500/50 p-5 sm:p-6 shadow-2xl space-y-5 relative overflow-hidden animate-fadeIn">
+                <div className="absolute top-0 right-0 w-44 h-44 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
+
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-600 flex items-center justify-center text-slate-950 font-black shadow-lg">
-                      <Crown className="w-5 h-5 text-slate-950 fill-slate-950" />
+                    <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-amber-500 to-yellow-400 flex items-center justify-center text-slate-950 font-black shadow-lg shadow-amber-950/50 shrink-0">
+                      <Crown className="w-6 h-6 text-slate-950 fill-slate-950" />
                     </div>
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <h4 className="text-base font-extrabold text-white">
-                          Cirqlr Pro Companion
+                          Cirqlr Pro Membership (30-Day Pass)
                         </h4>
                         {isPro ? (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 uppercase">
-                            Active Member
+                          <span className="text-[10px] font-black px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950 uppercase tracking-wider">
+                            Active Pro Member
                           </span>
                         ) : (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-600/60">
-                            ₹{finalPrice}/month
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {discountPercent > 0 && (
+                              <span className="text-xs text-slate-400 line-through font-mono">
+                                ₹{basePrice}
+                              </span>
+                            )}
+                            <span className="text-xs font-extrabold px-2.5 py-0.5 rounded-full bg-amber-950/90 text-amber-300 border border-amber-500/60 font-mono">
+                              ₹{finalPrice} / 30 Days
+                            </span>
+                            {discountPercent > 0 && (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-500/60">
+                                {discountPercent}% FESTIVE OFF
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
-                      <p className="text-xs text-slate-400 mt-0.5">
-                        Stand out with a Google-style Pro profile ring, transparent Golden Cards, and unlimited packages.
+                      <p className="text-xs text-slate-300 mt-1">
+                        Unlock unlimited activity packages, premium golden profile cards, and priority discovery across West Bengal &amp; Odisha.
                       </p>
                     </div>
                   </div>
 
                   {isPro ? (
-                    <div className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-500/10 border border-amber-500/40 rounded-xl text-amber-300 text-xs font-bold">
-                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <div className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-500/15 border border-amber-400/50 rounded-xl text-amber-300 text-xs font-bold shrink-0">
+                      <Sparkles className="w-4 h-4 text-amber-400" />
                       <span>Pro Privileges Active</span>
                     </div>
                   ) : (
                     <button
                       type="button"
                       onClick={handleSubscribePro}
-                      className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-600 hover:from-amber-400 hover:to-yellow-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-lg cursor-pointer shrink-0"
+                      className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 hover:from-amber-400 hover:to-yellow-300 text-slate-950 font-black rounded-xl text-xs transition-all shadow-lg shadow-amber-950/60 cursor-pointer active:scale-95 shrink-0"
                     >
                       <Crown className="w-4 h-4 fill-slate-950" />
                       <span>Upgrade to Pro (₹{finalPrice})</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* 4 Official Cirqlr Pro Benefits Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div className="bg-slate-950/80 border border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
+                    <span className="text-xl">♾️</span>
+                    <div>
+                      <h5 className="text-xs font-bold text-amber-300">Unlimited Activity Package Cards</h5>
+                      <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
+                        Break past the 3-card free limit! Create and publish unlimited custom outing packages in Companion Studio for 30 days.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-950/80 border border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
+                    <span className="text-xl">👑</span>
+                    <div>
+                      <h5 className="text-xs font-bold text-amber-300">Exclusive Golden Card &amp; Pro Ring</h5>
+                      <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
+                        Stand out in Public Explore with a highlighted Golden Companion Card, verified Pro Crown badge, and illuminated profile ring.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-950/80 border border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
+                    <span className="text-xl">🚀</span>
+                    <div>
+                      <h5 className="text-xs font-bold text-amber-300">Top Priority in City Search</h5>
+                      <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
+                        Your profile and activity packages are featured at the top when Bookers browse companions in your city hub.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-950/80 border border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
+                    <span className="text-xl">🛡️</span>
+                    <div>
+                      <h5 className="text-xs font-bold text-amber-300">Priority Dispute &amp; Safety Support</h5>
+                      <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
+                        Receive fast-track Admin resolution on booking disputes, fee protection, and dedicated platform support.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Pro Footer Note */}
+                <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] text-slate-300">
+                  <span>
+                    ✨ One-time 30-Day Pass at <strong>₹{finalPrice}</strong> (No auto-debit • Instant activation via Razorpay).
+                  </span>
+                  {!isPro && (
+                    <button
+                      type="button"
+                      onClick={handleSubscribePro}
+                      className="text-amber-400 hover:text-amber-300 font-extrabold underline cursor-pointer self-start sm:self-auto"
+                    >
+                      Activate 30-Day Pro Pass →
                     </button>
                   )}
                 </div>
