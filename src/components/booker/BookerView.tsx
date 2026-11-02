@@ -12,13 +12,10 @@ import {
   Languages, 
   Package, 
   Sparkles, 
-  Info, 
   Tag, 
   Building2, 
   CheckCircle2, 
-  Clock, 
   Users, 
-  AlertCircle,
   ShieldAlert,
   ExternalLink,
   SlidersHorizontal,
@@ -26,7 +23,8 @@ import {
   ChevronDown,
   ChevronUp,
   RotateCcw,
-  Check
+  Check,
+  Crown
 } from 'lucide-react';
 import { CopyUserIdButton } from '../common/CopyUserIdButton';
 
@@ -38,7 +36,6 @@ export const BookerView: React.FC = () => {
     getCompanionActivityCards,
     activityCards,
     openAuthModal,
-    setActiveTab,
     openSuspensionNotice,
     openProfileModal
   } = useMarketplace();
@@ -70,14 +67,9 @@ export const BookerView: React.FC = () => {
 
   const CITIES = ['All', 'Kolkata', 'Siliguri', 'Durgapur', 'Bhubaneswar', 'Cuttack', 'Puri'];
 
-  // STRICT EXPLORE GRID VISIBILITY RULE:
-  // A companion ONLY displays if:
-  // a) verificationStatus === 'ID Verified'
-  // b) accountStanding === 'Active' or 'Warned'
-  // c) activityCards.length > 0 (Must have created at least 1 Activity Package Card)
-  // + Explicit Gender filter, City filter, and Category filter!
+  // STRICT EXPLORE GRID VISIBILITY RULE + PRO PRIORITY SORTING:
   const verifiedLiveCompanions = useMemo(() => {
-    return usersAndCompanions.filter((comp) => {
+    const filtered = usersAndCompanions.filter((comp) => {
       // Condition a: Account must be in good standing (not Blocked, Suspended, or Deleted_Archived)
       const isBlockedOrSuspended =
         comp.accountStatus === 'Blocked' ||
@@ -87,8 +79,7 @@ export const BookerView: React.FC = () => {
         Boolean((comp as any).isBlocked);
       if (isBlockedOrSuspended) return false;
 
-      // Condition b: Verification check (Either automated ID verification OR Admin manual override)
-      // As long as isVerified === true in Firestore and NOT Rejected, user is live!
+      // Condition b: Verification check
       if (comp.verificationStatus === 'Rejected') return false;
       const isVerified = Boolean(comp.isVerified) && (comp.verificationStatus === 'Verified' || comp.verificationStatus === 'ID Verified');
       if (!isVerified) return false;
@@ -99,25 +90,20 @@ export const BookerView: React.FC = () => {
       }
 
       const cards = getCompanionActivityCards(comp.userToken);
-      // STRICT RULE: User must ONLY appear in Public Explore after explicitly creating and publishing an Activity Card
       if (!cards || cards.length === 0) return false;
 
-      // Explicit Gender Filter (Smart Default with 100% User Override)
       if (selectedGender !== 'All' && comp.gender !== selectedGender) {
         return false;
       }
 
-      // Filter by city
       if (selectedCity !== 'All' && comp.city !== selectedCity) return false;
 
-      // Filter by category
       if (selectedCategory !== 'All') {
         const cardHasCategory = cards.some((c) => c.venueCategory === selectedCategory);
         const profileHasCategory = comp.outingCategories?.includes(selectedCategory);
         if (!cardHasCategory && !profileHasCategory) return false;
       }
 
-      // Filter by search query
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchesName = comp.fullName.toLowerCase().includes(q);
@@ -137,6 +123,14 @@ export const BookerView: React.FC = () => {
       }
 
       return true;
+    });
+
+    // Rank Pro Companions at the very top of Explore results
+    return filtered.sort((a, b) => {
+      const aPro = Boolean(a.isProCompanion || a.isPremiumCompanion) ? 1 : 0;
+      const bPro = Boolean(b.isProCompanion || b.isPremiumCompanion) ? 1 : 0;
+      if (bPro !== aPro) return bPro - aPro;
+      return (b.rating || 0) - (a.rating || 0);
     });
   }, [
     usersAndCompanions, 
@@ -158,7 +152,6 @@ export const BookerView: React.FC = () => {
       openSuspensionNotice(currentUser);
       return;
     }
-    // Block unverified bookers from booking globally:
     const isBookerVerified = Boolean(currentUser.isVerified) && (currentUser.verificationStatus === 'Verified' || currentUser.verificationStatus === 'ID Verified');
     if (!isBookerVerified) {
       setUnverifiedBookerPromptOpen(true);
@@ -175,9 +168,8 @@ export const BookerView: React.FC = () => {
 
   return (
     <div className="space-y-4 sm:space-y-5 animate-fadeIn">
-      {/* Filter and Search Bar with Clean Solid Dark Styling */}
+      {/* Filter and Search Bar */}
       <div className="bg-slate-900 rounded-2xl border border-slate-800 p-3.5 sm:p-4 shadow-xl space-y-3 text-white">
-        {/* Search Input Row with Compact Filter Button on Right */}
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="relative flex-1">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -200,7 +192,6 @@ export const BookerView: React.FC = () => {
             )}
           </div>
 
-          {/* Sleek Filter Icon Button on Right of Search Bar */}
           <button
             type="button"
             onClick={() => setIsFilterOpen(!isFilterOpen)}
@@ -227,7 +218,6 @@ export const BookerView: React.FC = () => {
           </button>
         </div>
 
-        {/* Compact Active Filter Badges Strip (when drawer is collapsed) */}
         {!isFilterOpen && activeFilterCount > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px] text-slate-400 animate-fadeIn">
             <span className="font-bold text-slate-300 text-xs mr-0.5">Active Filters:</span>
@@ -239,7 +229,6 @@ export const BookerView: React.FC = () => {
                   type="button"
                   onClick={() => setSelectedGender('All')}
                   className="hover:text-white ml-0.5 cursor-pointer"
-                  title="Remove gender filter"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -253,7 +242,6 @@ export const BookerView: React.FC = () => {
                   type="button"
                   onClick={() => setSelectedCity('All')}
                   className="hover:text-white ml-0.5 cursor-pointer"
-                  title="Remove city filter"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -267,7 +255,6 @@ export const BookerView: React.FC = () => {
                   type="button"
                   onClick={() => setSelectedCategory('All')}
                   className="hover:text-white ml-0.5 cursor-pointer"
-                  title="Remove activity filter"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -284,7 +271,6 @@ export const BookerView: React.FC = () => {
           </div>
         )}
 
-        {/* Collapsible Modern Filter Drawer / Popover Panel */}
         {isFilterOpen && (
           <div className="pt-3 border-t border-slate-800/90 space-y-3.5 animate-fadeIn">
             <div className="flex items-center justify-between pb-1">
@@ -321,7 +307,6 @@ export const BookerView: React.FC = () => {
               </div>
             </div>
 
-            {/* Section 1: Gender Filter Pills */}
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider shrink-0 mr-1 flex items-center gap-1">
                 <Users className="w-3.5 h-3.5 text-purple-400 shrink-0" />
@@ -343,7 +328,6 @@ export const BookerView: React.FC = () => {
               ))}
             </div>
 
-            {/* Section 2: City Hub Pills */}
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider shrink-0 mr-1 flex items-center gap-1">
                 <Building2 className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
@@ -365,7 +349,6 @@ export const BookerView: React.FC = () => {
               ))}
             </div>
 
-            {/* Section 3: Venue Category Filter Pills */}
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider shrink-0 mr-1 flex items-center gap-1">
                 <Tag className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -398,7 +381,6 @@ export const BookerView: React.FC = () => {
               ))}
             </div>
 
-            {/* Bottom Drawer Actions */}
             <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
               <span className="text-[11px] text-slate-400">
                 Filters update live and are saved during your session.
@@ -468,28 +450,49 @@ export const BookerView: React.FC = () => {
               const minRate = cards.length > 0 
                 ? Math.min(...cards.map((c) => c.hourlyRate))
                 : companion.hourlyRate;
+              const isProCompanion = Boolean(companion.isProCompanion || companion.isPremiumCompanion);
 
               return (
                 <motion.div
                   key={companion.userToken}
                   whileHover={{ y: -6 }}
                   transition={{ type: 'spring', stiffness: 350, damping: 25 }}
-                  className="bg-slate-900 rounded-2xl border border-slate-700/80 hover:border-cyan-500/50 hover:shadow-[0_16px_40px_-10px_rgba(6,182,212,0.25)] transition-all overflow-hidden flex flex-col justify-between text-white group/card"
+                  className={`rounded-2xl transition-all overflow-hidden flex flex-col justify-between text-white group/card relative ${
+                    isProCompanion
+                      ? 'bg-gradient-to-br from-amber-950/45 via-slate-900/90 to-yellow-950/35 backdrop-blur-xl border-2 border-amber-400/70 shadow-[0_12px_38px_-8px_rgba(245,158,11,0.35)] hover:border-amber-300 hover:shadow-[0_18px_45px_-8px_rgba(245,158,11,0.5)]'
+                      : 'bg-slate-900 border border-slate-700/80 hover:border-cyan-500/50 hover:shadow-[0_16px_40px_-10px_rgba(6,182,212,0.25)]'
+                  }`}
                 >
+                  {/* Ambient Golden Shimmer Glow for Pro Members */}
+                  {isProCompanion && (
+                    <div className="absolute -top-12 -right-12 w-36 h-36 bg-amber-400/20 rounded-full blur-2xl pointer-events-none" />
+                  )}
+
                   <div>
                     {/* Card Header & Avatar - CLICKABLE TO OPEN PUBLIC PROFILE */}
                     <div 
                       onClick={() => handleOpenProfile(companion)}
-                      className="p-5 pb-3 cursor-pointer group/profile hover:bg-slate-800/40 transition-all rounded-t-2xl relative"
+                      className={`p-5 pb-3 cursor-pointer group/profile transition-all rounded-t-2xl relative ${
+                        isProCompanion ? 'hover:bg-amber-500/10' : 'hover:bg-slate-800/40'
+                      }`}
                       title="Click to view full public profile & activity packages"
                     >
                       <div className="flex items-start gap-3.5">
-                        <div className="relative shrink-0">
+                        {/* Avatar with Blue/Gold Circle Ring for Pro Members */}
+                        <div className={`relative shrink-0 ${
+                          isProCompanion
+                            ? 'p-1 rounded-full bg-gradient-to-tr from-blue-500 via-cyan-400 to-amber-400 shadow-[0_0_18px_rgba(59,130,246,0.6)]'
+                            : ''
+                        }`}>
                           {companion.avatarUrl && companion.avatarUrl.trim() !== '' ? (
                             <img
                               src={companion.avatarUrl}
                               alt={companion.fullName}
-                              className="w-16 h-16 rounded-2xl object-cover ring-2 ring-emerald-400 shadow-[0_0_14px_rgba(16,185,129,0.5)] group-hover/profile:ring-cyan-400 transition-all"
+                              className={`w-16 h-16 object-cover transition-all ${
+                                isProCompanion
+                                  ? 'rounded-full border-2 border-slate-950'
+                                  : 'rounded-2xl ring-2 ring-emerald-400 shadow-[0_0_14px_rgba(16,185,129,0.5)] group-hover/profile:ring-cyan-400'
+                              }`}
                               onError={(e) => {
                                 (e.currentTarget as HTMLElement).style.display = 'none';
                                 const fallback = e.currentTarget.nextElementSibling as HTMLElement;
@@ -498,20 +501,36 @@ export const BookerView: React.FC = () => {
                             />
                           ) : null}
                           <div
-                            className={`w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-cyan-600 text-white font-bold items-center justify-center text-xl ring-2 ring-emerald-400 shadow-[0_0_14px_rgba(16,185,129,0.5)] group-hover/profile:ring-cyan-400 transition-all ${
-                              companion.avatarUrl && companion.avatarUrl.trim() !== '' ? 'hidden' : 'flex'
-                            }`}
+                            className={`w-16 h-16 bg-gradient-to-br from-indigo-500 to-cyan-600 text-white font-bold items-center justify-center text-xl transition-all ${
+                              isProCompanion
+                                ? 'rounded-full border-2 border-slate-950'
+                                : 'rounded-2xl ring-2 ring-emerald-400 shadow-[0_0_14px_rgba(16,185,129,0.5)] group-hover/profile:ring-cyan-400'
+                            } ${companion.avatarUrl && companion.avatarUrl.trim() !== '' ? 'hidden' : 'flex'}`}
                           >
                             {companion.fullName.charAt(0)}
                           </div>
-                          <span className="absolute -bottom-1 -right-1 bg-emerald-500 text-white rounded-full p-0.5 ring-2 ring-slate-900 shadow-sm" title="Active">
+                          <span
+                            className={`absolute -bottom-1 -right-1 text-white rounded-full p-0.5 ring-2 ring-slate-900 shadow-sm ${
+                              isProCompanion ? 'bg-blue-500' : 'bg-emerald-500'
+                            }`}
+                            title={isProCompanion ? 'Verified Pro Companion' : 'Active'}
+                          >
                             <CheckCircle2 className="w-3.5 h-3.5" />
                           </span>
                         </div>
+
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-1">
-                            <h3 className="font-bold text-white text-sm truncate group-hover/profile:text-cyan-300 transition-colors flex items-center gap-1.5">
+                            <h3 className={`font-bold text-sm truncate transition-colors flex items-center gap-1.5 ${
+                              isProCompanion ? 'text-amber-200 group-hover/profile:text-amber-100' : 'text-white group-hover/profile:text-cyan-300'
+                            }`}>
                               <span>{companion.fullName}</span>
+                              {isProCompanion && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 text-[9px] font-black uppercase tracking-wider shadow-xs shrink-0">
+                                  <Crown className="w-2.5 h-2.5 fill-slate-950 text-slate-950" />
+                                  <span>PRO</span>
+                                </span>
+                              )}
                               {currentUser && companion.userToken === currentUser.userToken && (
                                 <span className="px-1.5 py-0.5 rounded-full bg-cyan-950/90 text-cyan-300 border border-cyan-500/60 text-[9px] font-black uppercase tracking-wider">
                                   You
@@ -525,19 +544,19 @@ export const BookerView: React.FC = () => {
                             />
                           </div>
                           <div className="flex items-center gap-1.5 text-xs text-slate-300 mt-0.5">
-                            <MapPin className="w-3 h-3 text-cyan-400 shrink-0" />
+                            <MapPin className={`w-3 h-3 shrink-0 ${isProCompanion ? 'text-amber-400' : 'text-cyan-400'}`} />
                             <span className="font-medium truncate">{companion.city}, {companion.state}</span>
                             <span className="text-slate-500">•</span>
                             <span>Age {companion.age}</span>
                           </div>
-                          <div className="flex items-center gap-2 mt-1.5">
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
                             {companion.reviewCount > 0 && companion.rating > 0 ? (
                               <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-700/60">
                                 <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                                 {companion.rating.toFixed(1)} ({companion.reviewCount})
                               </span>
                             ) : (
-                              <span className="flex items-center gap-1 text-[11px] font-bold text-indigo-300 bg-indigo-950/70 px-2 py-0.5 rounded border border-indigo-700/60" title="New companion - no completed ratings yet">
+                              <span className="flex items-center gap-1 text-[11px] font-bold text-indigo-300 bg-indigo-950/70 px-2 py-0.5 rounded border border-indigo-700/60">
                                 <Sparkles className="w-3 h-3 text-indigo-400" />
                                 New
                               </span>
@@ -551,48 +570,65 @@ export const BookerView: React.FC = () => {
                       </div>
 
                       {/* Bio snippet */}
-                      <p className="text-xs text-slate-300 mt-3 leading-relaxed line-clamp-2">
+                      <p className="text-xs text-slate-200 mt-3 leading-relaxed line-clamp-2">
                         {companion.bio}
                       </p>
 
                       {/* Languages */}
-                      <div className="flex items-center gap-1.5 mt-2.5 text-[11px] text-slate-400">
+                      <div className="flex items-center gap-1.5 mt-2.5 text-[11px] text-slate-300">
                         <Languages className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        <span className="font-medium text-slate-300">Languages:</span>
+                        <span className="font-medium text-slate-200">Languages:</span>
                         <span className="truncate">{companion.languages.join(', ')}</span>
                       </div>
 
                       {/* Activity Packages Count & Preview */}
-                      <div className="mt-3 p-2.5 bg-slate-950/70 rounded-xl border border-slate-800 group-hover/profile:border-cyan-500/30 transition-colors">
+                      <div className={`mt-3 p-2.5 rounded-xl border transition-colors ${
+                        isProCompanion
+                          ? 'bg-amber-950/40 border-amber-500/40 group-hover/profile:border-amber-400/70'
+                          : 'bg-slate-950/70 border-slate-800 group-hover/profile:border-cyan-500/30'
+                      }`}>
                         <div className="flex items-center justify-between text-xs mb-1">
-                          <span className="font-bold text-slate-200 flex items-center gap-1">
-                            <Package className="w-3.5 h-3.5 text-cyan-400" />
+                          <span className="font-bold text-slate-100 flex items-center gap-1">
+                            <Package className={`w-3.5 h-3.5 ${isProCompanion ? 'text-amber-400' : 'text-cyan-400'}`} />
                             {cards.length} Activity Packages
                           </span>
+                          {isProCompanion && (
+                            <span className="text-[10px] font-extrabold text-amber-300">
+                              ★ Featured Pro
+                            </span>
+                          )}
                         </div>
                         {cards.length > 0 ? (
                           <div className="space-y-1">
                             {cards.slice(0, 2).map((c) => (
-                              <div key={c.id} className="text-[11px] text-slate-300 flex items-center justify-between">
+                              <div key={c.id} className="text-[11px] text-slate-200 flex items-center justify-between">
                                 <span className="truncate max-w-[180px]">• {c.title}</span>
-                                <span className="font-semibold text-cyan-300">₹{c.hourlyRate}/h</span>
+                                <span className={`font-semibold ${isProCompanion ? 'text-amber-300' : 'text-cyan-300'}`}>
+                                  ₹{c.hourlyRate}/h
+                                </span>
                               </div>
                             ))}
                           </div>
                         ) : (
-                          <span className="text-[11px] text-slate-500 italic">Standard outing package available</span>
+                          <span className="text-[11px] text-slate-400 italic">Standard outing package available</span>
                         )}
                       </div>
                     </div>
                   </div>
 
                   {/* Card Footer with Rate and Action */}
-                  <div className="bg-slate-950/90 p-4 border-t border-slate-800/80 flex items-center justify-between">
+                  <div className={`p-4 border-t flex items-center justify-between ${
+                    isProCompanion
+                      ? 'bg-amber-950/60 border-amber-500/40'
+                      : 'bg-slate-950/90 border-slate-800/80'
+                  }`}>
                     <div>
-                      <span className="text-[10px] text-slate-400 font-medium block">Starting from</span>
+                      <span className="text-[10px] text-slate-300 font-medium block">Starting from</span>
                       <div className="flex items-baseline gap-1">
-                        <span className="text-base font-extrabold text-cyan-400">₹{minRate}</span>
-                        <span className="text-xs text-slate-400 font-medium">/ hr</span>
+                        <span className={`text-base font-extrabold ${isProCompanion ? 'text-amber-300' : 'text-cyan-400'}`}>
+                          ₹{minRate}
+                        </span>
+                        <span className="text-xs text-slate-300 font-medium">/ hr</span>
                       </div>
                     </div>
 
@@ -600,7 +636,7 @@ export const BookerView: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleOpenProfile(companion)}
-                        className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-all cursor-pointer border border-slate-700"
+                        className="px-3 py-2 bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl transition-all cursor-pointer border border-slate-700"
                         title="View Public Profile"
                       >
                         Profile
@@ -609,10 +645,12 @@ export const BookerView: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleRequestOuting(companion)}
-                        className={`px-4 py-2 text-white text-xs font-bold rounded-xl transition-all shadow-md cursor-pointer ${
+                        className={`px-4 py-2 text-xs font-bold rounded-xl transition-all shadow-md cursor-pointer ${
                           currentUser && companion.userToken === currentUser.userToken
-                            ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-600/30'
-                            : 'bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 shadow-indigo-600/30'
+                            ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-emerald-600/30'
+                            : isProCompanion
+                            ? 'bg-gradient-to-r from-amber-400 via-yellow-500 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black shadow-amber-500/30'
+                            : 'bg-gradient-to-r from-indigo-600 to-cyan-600 hover:from-indigo-500 hover:to-cyan-500 text-white shadow-indigo-600/30'
                         }`}
                       >
                         {currentUser && companion.userToken === currentUser.userToken ? 'Your Profile' : 'Request Outing'}
